@@ -1,0 +1,47 @@
+[project]
+name = "toss-ai-trading-server"
+version = "0.1.0"
+description = "토스 기반 AI 자동매매 — 거래 서버(두뇌)"
+requires-python = ">=3.12"
+# 현재 코드가 실제로 import 하는 런타임 의존성만. (DB/퀀트는 아래 future 그룹 — 단계적으로 도입)
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pydantic>=2",
+    "pydantic-settings",
+    "anthropic",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "ruff",
+    "mypy",
+]
+# 향후 단계(DB 영속화·퀀트 지표 확장)에서 도입 예정. 현재 코드는 아직 사용하지 않음.
+future = [
+    "tenacity",
+    "sqlalchemy>=2",
+    "asyncpg",
+    "alembic",
+    "pandas",
+    "numpy",
+    "pandas-ta",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true

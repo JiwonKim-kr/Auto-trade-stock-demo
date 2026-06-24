@@ -1,0 +1,19 @@
+{
+  "result": {
+    "candles": [
+      { "timestamp": "2026-06-23T00:00:00.000+09:00", "openPrice": "358500", "highPrice": "362000", "lowPrice": "310000", "closePrice": "310500", "volume": "76892183", "currency": "KRW" },
+      { "timestamp": "2026-06-22T00:00:00.000+09:00", "openPrice": "351000", "highPrice": "363000", "lowPrice": "342000", "closePrice": "356500", "volume": "46720412", "currency": "KRW" },
+      { "timestamp": "2026-06-19T00:00:00.000+09:00", "openPrice": "380000", "highPrice": "380000", "lowPrice": "346000", "closePrice": "350500", "volume": "77053712", "currency": "KRW" },
+      { "timestamp": "2026-06-18T00:00:00.000+09:00", "openPrice": "346000", "highPrice": "364000", "lowPrice": "341500", "closePrice": "363500", "volume": "59080574", "currency": "KRW" },
+      { "timestamp": "2026-06-17T00:00:00.000+09:00", "openPrice": "339500", "highPrice": "348000", "lowPrice": "331000", "closePrice": "343000", "volume": "35704177", "currency": "KRW" },
+      { "timestamp": "2026-06-16T00:00:00.000+09:00", "openPrice": "348000", "highPrice": "352500", "lowPrice": "332500", "closePrice": "343000", "volume": "36121675", "currency": "KRW" },
+      { "timestamp": "2026-06-15T00:00:00.000+09:00", "openPrice": "337500", "highPrice": "345000", "lowPrice": "334000", "closePrice": "341500", "volume": "39436881", "currency": "KRW" },
+      { "timestamp": "2026-06-12T00:00:00.000+09:00", "openPrice": "313000", "highPrice": "339000", "lowPrice": "313000", "closePrice": "324500", "volume": "60357743", "currency": "KRW" },
+      { "timestamp": "2026-06-11T00:00:00.000+09:00", "openPrice": "292000", "highPrice": "308500", "lowPrice": "283000", "closePrice": "306000", "volume": "52925767", "currency": "KRW" },
+      { "timestamp": "2026-06-10T00:00:00.000+09:00", "openPrice": "319500", "highPrice": "319500", "lowPrice": "295250", "closePrice": "297500", "volume": "46451792", "currency": "KRW" },
+      { "timestamp": "2026-06-09T00:00:00.000+09:00", "openPrice": "310000", "highPrice": "327500", "lowPrice": "300000", "closePrice": "327000", "volume": "52941179", "currency": "KRW" },
+      { "timestamp": "2026-06-08T00:00:00.000+09:00", "openPrice": "304500", "highPrice": "316000", "lowPrice": "290500", "closePrice": "303000", "volume": "76298436", "currency": "KRW" },
+      { "timestamp": "2026-06-05T00:00:00.000+09:00", "openPrice": "343000", "highPrice": "346000", "lowPrice": "321000", "closePrice": "329000", "volume": "64419483", "currency": "KRW" }
+    ]
+  }
+}

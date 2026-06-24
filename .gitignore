@@ -1,0 +1,28 @@
+# ── Secrets — 절대 커밋 금지 (실자금 자격증명) ──
+.env
+.env.*
+!.env.example
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ── Node / 데스크톱 프론트엔드 ──
+node_modules/
+dist/
+.vite/
+
+# ── Tauri / Rust ──
+src-tauri/target/
+target/
+
+# ── OS / 에디터 ──
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

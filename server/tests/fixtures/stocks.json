@@ -1,0 +1,25 @@
+{
+  "result": [
+    {
+      "symbol": "005930",
+      "name": "삼성전자",
+      "englishName": "SamsungElec",
+      "isinCode": "KR7005930003",
+      "market": "KOSPI",
+      "securityType": "STOCK",
+      "isCommonShare": true,
+      "status": "ACTIVE",
+      "currency": "KRW",
+      "listDate": "1975-06-11",
+      "delistDate": null,
+      "sharesOutstanding": "5846278608",
+      "leverageFactor": null,
+      "koreanMarketDetail": {
+        "liquidationTrading": false,
+        "nxtSupported": true,
+        "krxTradingSuspended": false,
+        "nxtTradingSuspended": false
+      }
+    }
+  ]
+}

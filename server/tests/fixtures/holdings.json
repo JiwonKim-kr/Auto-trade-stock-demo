@@ -1,0 +1,95 @@
+{
+  "result": {
+    "totalPurchaseAmount": {
+      "krw": "229000",
+      "usd": "0.069972"
+    },
+    "marketValue": {
+      "amount": {
+        "krw": "202500",
+        "usd": "0.08014"
+      },
+      "amountAfterCost": {
+        "krw": "202095",
+        "usd": "0.08014"
+      }
+    },
+    "profitLoss": {
+      "amount": {
+        "krw": "-26500",
+        "usd": "0.010168"
+      },
+      "amountAfterCost": {
+        "krw": "-26905",
+        "usd": "0.010168"
+      },
+      "rate": "-0.1155",
+      "rateAfterCost": "-0.1173"
+    },
+    "dailyProfitLoss": {
+      "amount": {
+        "krw": "-21500",
+        "usd": "-0.0003"
+      },
+      "rate": "-0.0938"
+    },
+    "items": [
+      {
+        "symbol": "005935",
+        "name": "삼성전자우",
+        "marketCountry": "KR",
+        "currency": "KRW",
+        "quantity": "1",
+        "lastPrice": "202500",
+        "averagePurchasePrice": "229000",
+        "marketValue": {
+          "purchaseAmount": "229000",
+          "amount": "202500",
+          "amountAfterCost": "202095"
+        },
+        "profitLoss": {
+          "amount": "-26500",
+          "amountAfterCost": "-26905",
+          "rate": "-0.1157",
+          "rateAfterCost": "-0.1174"
+        },
+        "dailyProfitLoss": {
+          "amount": "-21500",
+          "rate": "-0.0938"
+        },
+        "cost": {
+          "commission": "0",
+          "tax": "405"
+        }
+      },
+      {
+        "symbol": "AAPL",
+        "name": "애플",
+        "marketCountry": "US",
+        "currency": "USD",
+        "quantity": "0.000271",
+        "lastPrice": "295.72",
+        "averagePurchasePrice": "258.199261",
+        "marketValue": {
+          "purchaseAmount": "0.069972",
+          "amount": "0.08014",
+          "amountAfterCost": "0.08014"
+        },
+        "profitLoss": {
+          "amount": "0.010168",
+          "amountAfterCost": "0.010168",
+          "rate": "0.1453",
+          "rateAfterCost": "0.1453"
+        },
+        "dailyProfitLoss": {
+          "amount": "-0.0003",
+          "rate": "-0.0042"
+        },
+        "cost": {
+          "commission": "0",
+          "tax": null
+        }
+      }
+    ]
+  }
+}
