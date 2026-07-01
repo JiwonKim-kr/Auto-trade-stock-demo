@@ -10,7 +10,7 @@ from app.engine.screener import ScreenIndicators
 from app.orders.guardrails import GuardrailConfig
 from app.orders.models import Side
 
-CFG = GuardrailConfig()   # per_order_max=100000 · per_symbol_max_weight=0.30 · daily=500000
+CFG = GuardrailConfig()   # per_order_max=100000 · per_symbol_max_weight=0.10 · daily=500000
 
 
 def ind(last: float) -> ScreenIndicators:
@@ -48,9 +48,9 @@ def test_buy_cash_limit():
 
 
 def test_buy_per_symbol_weight_limit():
-    # portfolio 200000 · 비중 0.30 → 여유 60000 · price 10000 → 6주
+    # portfolio 200000 · 비중 0.10 → 여유 20000 · price 10000 → 2주
     o = allocate(dec("BUY", 1.0), ctx(price=10000.0, portfolio_value_krw=Decimal("200000")), CFG)
-    assert o.quantity == Decimal("6")
+    assert o.quantity == Decimal("2")
 
 
 def test_buy_unaffordable_returns_none():

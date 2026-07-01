@@ -114,7 +114,7 @@ cp scripts/.env.example scripts/.env
 | `UNIVERSE_MAX_SYMBOLS` | 한 틱 후보 상한(캔들 레이트리밋 보호) | 40 |
 | `TRADING_MODE` | `DRY_RUN`(기본) / `LIVE` | `DRY_RUN` |
 | `I_UNDERSTAND_LIVE_REAL_MONEY` | LIVE 2차 확인(`YES`) | 없음 |
-| `PER_ORDER_MAX_KRW` · `DAILY_BUY_CAP_KRW` · `MAX_POSITIONS` · `PER_SYMBOL_MAX_WEIGHT` | 가드레일 한도 | 100000 · 500000 · 10 · 0.30 |
+| `PER_ORDER_MAX_KRW` · `DAILY_BUY_CAP_KRW` · `MAX_POSITIONS` · `PER_SYMBOL_MAX_WEIGHT` | 가드레일 한도 | 100000 · 500000 · 10 · 0.10 |
 | `DAILY_LOSS_LIMIT` · `MAX_DRAWDOWN_LIMIT` · `DRAWDOWN_REARM` | 서킷브레이커(일일손실·MDD·해제) | 0.05 · 0.15 · 0.08 |
 
 ## 주요 결정 (ADR 요약)

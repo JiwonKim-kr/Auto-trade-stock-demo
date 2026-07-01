@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     per_order_max_krw: Decimal = Decimal("100000")
     daily_buy_cap_krw: Decimal = Decimal("500000")
     max_positions: int = 10
-    per_symbol_max_weight: Decimal = Decimal("0.30")
+    per_symbol_max_weight: Decimal = Decimal("0.10")   # 단일 종목 집중 차단(max_positions=10과 정합)
     enforce_market_hours: bool = True
 
     # 서킷브레이커: 손실 국면 신규 진입 자동 차단(청산은 허용). 낙폭은 rearm 까지 회복돼야 해제.

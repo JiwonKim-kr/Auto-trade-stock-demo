@@ -25,7 +25,7 @@ class GuardrailConfig(BaseModel):
     per_order_max_krw: Decimal = Decimal("100000")      # 1주문 최대 금액
     daily_buy_cap_krw: Decimal = Decimal("500000")      # 일일 매수 한도
     max_positions: int = 10                             # 최대 보유 종목 수
-    per_symbol_max_weight: Decimal = Decimal("0.30")    # 종목당 최대 비중(0~1)
+    per_symbol_max_weight: Decimal = Decimal("0.10")    # 종목당 최대 비중(0~1). max_positions=10과 정합(10×10%=완전배포 가능·단일종목 집중 차단)
     market_open: time = time(9, 0)                      # KST
     market_close: time = time(15, 30)                   # KST
     enforce_market_hours: bool = True
