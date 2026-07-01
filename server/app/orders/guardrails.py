@@ -42,6 +42,8 @@ class GuardrailContext:
     daily_buy_used_krw: Decimal = Decimal(0)
     portfolio_value_krw: Decimal | None = None          # None 이면 비중 검사 스킵
     symbol_current_value_krw: Decimal = Decimal(0)
+    circuit_breaker_halt: bool = False                  # 서킷브레이커 발동 → 신규 매수만 차단
+    circuit_breaker_reason: str = ""
 
 
 @dataclass
@@ -57,6 +59,15 @@ def _is_buy(order: OrderRequest) -> bool:
 def guard_kill_switch(order: OrderRequest, ctx: GuardrailContext, cfg: GuardrailConfig):
     if ctx.kill_switch:
         return Violation("KILL_SWITCH", "킬스위치 작동 중 — 모든 주문 차단")
+    return None
+
+
+def guard_circuit_breaker(order: OrderRequest, ctx: GuardrailContext, cfg: GuardrailConfig):
+    """손실 서킷브레이커: 발동 시 **신규 매수만** 차단(매도=청산은 항상 허용)."""
+    if not _is_buy(order):
+        return None
+    if ctx.circuit_breaker_halt:
+        return Violation("CIRCUIT_BREAKER", ctx.circuit_breaker_reason or "서킷브레이커 발동 — 신규 진입 중단")
     return None
 
 
@@ -128,6 +139,7 @@ def guard_per_symbol_weight(order: OrderRequest, ctx: GuardrailContext, cfg: Gua
 
 ALL_GUARDRAILS = [
     guard_kill_switch,
+    guard_circuit_breaker,
     guard_market_hours,
     guard_per_order_max,
     guard_daily_buy_cap,

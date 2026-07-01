@@ -41,6 +41,8 @@ class TickResult:
     decisions: list[Decision]
     orders: list[OrderResult]
     note: str = ""
+    circuit_breaker: bool = False
+    circuit_breaker_reason: str = ""
 
 
 class DeterministicJudge:
@@ -70,9 +72,12 @@ async def run_tick(
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
 
+    cb = order_service.circuit_breaker
+
     def _result(candidates, decisions, orders, universe, note="") -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
-                          candidates=candidates, decisions=decisions, orders=orders, note=note)
+                          candidates=candidates, decisions=decisions, orders=orders, note=note,
+                          circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason)
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union
     holdings = await toss.get_holdings()
@@ -108,6 +113,12 @@ async def run_tick(
         cash = (await toss.get_buying_power("KRW")).cash_buying_power
     except Exception:
         cash = None
+
+    # 5b) 서킷브레이커 갱신(틱당 1회). 자기자본=현금+보유 평가액(KRW), 일일손익률=holdings.
+    #     발동 시 신규 매수만 차단(매도=청산은 허용). 상태 주입은 order_service.submit 이 처리.
+    equity = (cash + holdings.market_value.amount.krw) if cash is not None else None
+    daily_pl_rate = holdings.daily_profit_loss.rate if holdings.daily_profit_loss else None
+    order_service.assess_circuit_breaker(equity, daily_pl_rate, now)
 
     # 6) 후보 컨텍스트 (매수 후보 + 보유 종목)
     candidates = candidate_contexts(buy_results, stocks, holdings,

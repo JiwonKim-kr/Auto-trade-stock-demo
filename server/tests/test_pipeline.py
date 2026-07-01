@@ -106,6 +106,32 @@ async def test_tick_kill_switch_rejects_orders():
     assert res.orders and all(x.status is OrderStatus.REJECTED for x in res.orders)
 
 
+async def test_tick_circuit_breaker_halts_new_buys():
+    # 일일 손실 -6% → 서킷브레이커 발동 → 신규 매수(000660) 차단
+    class LossToss(FakeToss):
+        async def get_holdings(self):
+            return Holdings.model_validate({
+                "totalPurchaseAmount": {"krw": "229000"},
+                "marketValue": {"amount": {"krw": "202500"}},
+                "profitLoss": {"amount": {"krw": "-26500"}, "rate": "-0.1155"},
+                "dailyProfitLoss": {"amount": {"krw": "-70000"}, "rate": "-0.06"},
+                "items": [{"symbol": "005930", "name": "삼성전자", "currency": "KRW", "quantity": "1",
+                           "lastPrice": "202500", "averagePurchasePrice": "229000",
+                           "marketValue": {"purchaseAmount": "229000", "amount": "202500"},
+                           "profitLoss": {"amount": "-26500", "rate": "-0.1157"}}],
+            })
+
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=LossToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT)
+    assert res.circuit_breaker is True and "일일 손실" in res.circuit_breaker_reason
+    buys = [o for o in res.orders if o.request.side is Side.BUY]
+    assert buys and all(
+        o.status is OrderStatus.REJECTED and "CIRCUIT_BREAKER" in o.reason for o in buys
+    )
+
+
 async def test_tick_no_symbols_noop():
     class EmptyToss(FakeToss):
         async def get_holdings(self):

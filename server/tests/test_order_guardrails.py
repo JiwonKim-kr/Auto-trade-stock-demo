@@ -119,6 +119,33 @@ def test_sell_skips_buy_guardrails():
     assert res.status is OrderStatus.DRY_RUN   # 매도는 매수 한도 무관
 
 
+# ── 서킷브레이커 (신규 매수 차단·매도 허용) ───────────────────────────────────
+def sell(symbol="005930", qty="1", **kw) -> OrderRequest:
+    return OrderRequest(symbol=symbol, side=Side.SELL, order_type=OrderType.MARKET,
+                        quantity=Decimal(qty), **kw)
+
+
+def test_circuit_breaker_blocks_buy():
+    svc = OrderService()
+    svc.assess_circuit_breaker(Decimal("1000000"), Decimal("-0.06"), OPEN_KST)   # 일일 -6%
+    res = svc.submit(buy(), ctx())
+    assert res.status is OrderStatus.REJECTED and "CIRCUIT_BREAKER" in res.reason
+
+
+def test_circuit_breaker_allows_sell():
+    svc = OrderService()
+    svc.assess_circuit_breaker(Decimal("1000000"), Decimal("-0.06"), OPEN_KST)
+    res = svc.submit(sell(), ctx())
+    assert res.status is OrderStatus.DRY_RUN   # 청산 경로는 항상 열림
+
+
+def test_circuit_breaker_context_halt_blocks_buy():
+    # 컨텍스트로 직접 발동 상태를 주입해도 순수 가드가 매수를 차단
+    svc = OrderService()
+    res = svc.submit(buy(), ctx(circuit_breaker_halt=True, circuit_breaker_reason="테스트 발동"))
+    assert res.status is OrderStatus.REJECTED and "CIRCUIT_BREAKER" in res.reason
+
+
 # ── 멱등 ──────────────────────────────────────────────────────────────────────
 def test_idempotency_returns_prior_without_resubmitting():
     calls: list[str] = []

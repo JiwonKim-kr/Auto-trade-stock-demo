@@ -76,7 +76,9 @@ async def main() -> int:
         res = await run_tick(toss=toss, order_service=svc, watchlist=watch,
                              judge=DeterministicJudge(), now=datetime.now(KST))
 
-    print(f"\nmode={res.mode}  kill_switch={res.kill_switch}")
+    print(f"\nmode={res.mode}  kill_switch={res.kill_switch}  circuit_breaker={res.circuit_breaker}")
+    if res.circuit_breaker:
+        print(f"  ⚠️ {res.circuit_breaker_reason}")
     print(f"유니버스(적격)={res.universe_symbols}  후보={res.candidates}")
     print("결정:")
     for d in res.decisions:

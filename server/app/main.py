@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.core.config import load_trading_mode
 from app.core.settings import get_settings
+from app.orders.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from app.orders.guardrails import GuardrailConfig
 from app.orders.service import OrderService
 from app.toss.client import TossClient, TossConfig
@@ -39,6 +40,13 @@ async def lifespan(app: FastAPI):
             max_positions=settings.max_positions,
             per_symbol_max_weight=settings.per_symbol_max_weight,
             enforce_market_hours=settings.enforce_market_hours,
+        ),
+        circuit_breaker=CircuitBreaker(
+            CircuitBreakerConfig(
+                daily_loss_limit=settings.daily_loss_limit,
+                max_drawdown_limit=settings.max_drawdown_limit,
+                rearm_drawdown=settings.drawdown_rearm,
+            )
         ),
     )
 

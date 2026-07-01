@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime
+from decimal import Decimal
 from typing import Callable, Protocol
 
+from app.orders.circuit_breaker import CircuitBreaker
 from app.orders.guardrails import GuardrailConfig, GuardrailContext, run_guardrails
 from app.orders.models import OrderRequest, OrderResult, OrderStatus, TradingMode
 
@@ -45,12 +48,14 @@ class OrderService:
         config: GuardrailConfig | None = None,
         executor: OrderExecutor | None = None,
         audit: AuditSink | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ):
         self.mode = mode
         self.config = config or GuardrailConfig()
         self._executor = executor
         self._audit = audit
         self.kill_switch = False
+        self.circuit_breaker = circuit_breaker or CircuitBreaker()
         self._seen: dict[str, OrderResult] = {}   # 멱등 원장
         self.ledger: list[OrderResult] = []        # 확정 결과 전수
 
@@ -61,6 +66,12 @@ class OrderService:
     def release_kill_switch(self) -> None:
         self.kill_switch = False
 
+    # ── 서킷브레이커 (틱당 1회 갱신; 발동 시 신규 매수 차단·매도 허용) ──
+    def assess_circuit_breaker(
+        self, equity_krw: Decimal | None, daily_pl_rate: Decimal | None, now: datetime
+    ) -> bool:
+        return self.circuit_breaker.assess(equity_krw, daily_pl_rate, now)
+
     # ── 주문 제출 ──
     def submit(self, order: OrderRequest, ctx: GuardrailContext) -> OrderResult:
         # 1) 멱등: 같은 clientOrderId 는 재전송 없이 이전 결과 반환
@@ -70,8 +81,14 @@ class OrderService:
             self._emit(dup)
             return dup
 
-        # 2) 가드레일(모드 무관). 킬스위치는 서비스 소유 상태를 주입
-        eff_ctx = dataclasses.replace(ctx, kill_switch=ctx.kill_switch or self.kill_switch)
+        # 2) 가드레일(모드 무관). 킬스위치·서킷브레이커는 서비스 소유 상태를 주입
+        cb = self.circuit_breaker
+        eff_ctx = dataclasses.replace(
+            ctx,
+            kill_switch=ctx.kill_switch or self.kill_switch,
+            circuit_breaker_halt=ctx.circuit_breaker_halt or cb.tripped,
+            circuit_breaker_reason=ctx.circuit_breaker_reason or cb.reason,
+        )
         violations = run_guardrails(order, eff_ctx, self.config)
         if violations:
             reason = "; ".join(f"[{v.code}] {v.reason}" for v in violations)

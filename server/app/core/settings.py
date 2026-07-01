@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     per_symbol_max_weight: Decimal = Decimal("0.30")
     enforce_market_hours: bool = True
 
+    # 서킷브레이커: 손실 국면 신규 진입 자동 차단(청산은 허용). 낙폭은 rearm 까지 회복돼야 해제.
+    daily_loss_limit: Decimal = Decimal("0.05")         # 일일 손실률 한도(양수 크기)
+    max_drawdown_limit: Decimal = Decimal("0.15")       # 고점대비 낙폭 한도(양수 크기)
+    drawdown_rearm: Decimal = Decimal("0.08")           # 낙폭 해제 기준(히스테리시스)
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -47,6 +47,7 @@ async def status_(request: Request, svc: OrderService = Depends(get_order_servic
     return {
         "mode": svc.mode.value,
         "kill_switch": svc.kill_switch,
+        "circuit_breaker": svc.circuit_breaker.snapshot(),
         "market_open_now": market_open,
         "toss_connected": request.app.state.toss_client is not None,
         "guardrails": {
@@ -128,6 +129,8 @@ async def tick(
     return {
         "mode": result.mode,
         "kill_switch": result.kill_switch,
+        "circuit_breaker": result.circuit_breaker,
+        "circuit_breaker_reason": result.circuit_breaker_reason,
         "engine": engine,
         "universe_symbols": result.universe_symbols,
         "candidates": result.candidates,
