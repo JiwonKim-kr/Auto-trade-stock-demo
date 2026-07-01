@@ -4,8 +4,9 @@
 **데스크톱 앱(눈)** 은 현황 조회·제어만 한다. 실자금이므로 **안전 우선**(DRY_RUN 기본·하드 가드레일·킬스위치).
 
 > **상태:** 거래 서버(두뇌)의 **거래 파이프라인 골격 완성** — 수집 → 유니버스 → 스크리너 → 조사 →
-> LLM 판단 → 결정적 사이징 → DRY_RUN 주문. **105개 테스트 통과**, **실계좌 DRY_RUN end-to-end 검증
-> (실주문 0)**. 데스크톱 앱·GCP 인프라·DB 영속화·LIVE 전환은 [로드맵](#로드맵) 참조.
+> LLM 판단 → 결정적 사이징 → DRY_RUN 주문. **KRX 심볼 소스 연동**(KOSPI+KOSDAQ 시드). **116개 테스트
+> 통과**, **실계좌 DRY_RUN end-to-end 검증(실주문 0)**. 데스크톱 앱·GCP 인프라·DB 영속화·LIVE 전환은
+> [로드맵](#로드맵) 참조.
 
 ---
 
@@ -23,8 +24,8 @@
    └──────────────────┘                                  │
               ┌────────────────┬───────────────────┬─────┴──────────┬──────────────────┐
               ▼                ▼                   ▼                ▼                  ▼
-       Secret Manager     Cloud SQL(PG)      토스 Open API    Anthropic API     (외부 KRX 심볼소스)
-       토스·AI 키         주문/포지션/감사    openapi.toss…    claude-fable-5     유니버스(예정)
+       Secret Manager     Cloud SQL(PG)      토스 Open API    Anthropic API     KRX 심볼 시드
+       토스·AI 키         주문/포지션/감사    openapi.toss…    claude-fable-5     KOSPI+KOSDAQ
 ```
 
 **토폴로지 원칙:** 토스/Anthropic 키는 **서버(Secret Manager)에만**. 데스크톱엔 서버 호출용 API 키만 둔다
@@ -33,7 +34,7 @@
 ## 거래 파이프라인
 
 ```
-워치리스트 ∪ 보유 종목
+KRX 시드(KOSPI+KOSDAQ) ∪ 워치리스트 ∪ 보유 종목   ← 후보 상한으로 캔들 호출 수 제어(레이트리밋)
   → stocks(마스터) enrich
   → 유니버스 보수적 제외 (우선주·레버리지·정리매매·거래정지·SPAC/ETN)
   → 스크리너 (이동평균·RSI·유동성·동전주 → 후보 압축)            ← 보유 종목은 매도 평가 위해 항상 포함
@@ -62,11 +63,12 @@
    ├─ app/
    │  ├─ toss/      토스 클라이언트(함정 내재화) + Pydantic 모델
    │  ├─ orders/    주문층(모드게이트·가드레일·킬스위치) + holdings→context
-   │  ├─ engine/    universe · screener · indicators · research · llm · allocator · pipeline
+   │  ├─ engine/    symbols · universe · screener · indicators · research · llm · allocator · pipeline
    │  ├─ api/       FastAPI 라우트 + 인증
    │  └─ core/      설정 · 거래모드(다중확인)
+   ├─ data/         KRX 심볼 시드 (krx_symbols.json — 페처가 갱신)
    ├─ scripts/      진단/점검 스크립트 (.env 는 여기, gitignore)
-   ├─ tests/        105개 테스트 (+ 실응답 픽스처)
+   ├─ tests/        116개 테스트 (+ 실응답 픽스처)
    └─ pyproject.toml
 ```
 
@@ -106,7 +108,9 @@ cp scripts/.env.example scripts/.env
 | `TOSS_ACCOUNT_SEQ` | 계좌 시퀀스(미설정 시 자동 판별) | 자동 |
 | `API_KEY` | 데스크톱 ↔ 서버 인증 키 | `dev-local-key`(운영 전 변경) |
 | `ANTHROPIC_API_KEY` | AI 엔진(없으면 결정적 폴백) | 없음 |
-| `WATCHLIST` | 임시 유니버스(쉼표 구분) | 빈 값 → 보유만 |
+| `WATCHLIST` | 워치리스트(쉼표 구분, 심볼 소스보다 우선) | 빈 값 |
+| `SYMBOL_SOURCE_PATH` | KRX 심볼 시드 경로(미설정 시 워치리스트만) | 없음 |
+| `UNIVERSE_MAX_SYMBOLS` | 한 틱 후보 상한(캔들 레이트리밋 보호) | 40 |
 | `TRADING_MODE` | `DRY_RUN`(기본) / `LIVE` | `DRY_RUN` |
 | `I_UNDERSTAND_LIVE_REAL_MONEY` | LIVE 2차 확인(`YES`) | 없음 |
 | `PER_ORDER_MAX_KRW` · `DAILY_BUY_CAP_KRW` · `MAX_POSITIONS` · `PER_SYMBOL_MAX_WEIGHT` | 가드레일 한도 | 100000 · 500000 · 10 · 0.30 |
@@ -121,7 +125,7 @@ cp scripts/.env.example scripts/.env
 
 ## 로드맵
 
-1. **KRX 외부 심볼 소스** — 현재 watchlist 임시 유니버스 → 전 종목 열거.
+1. ✅ **KRX 외부 심볼 소스** — KOSPI+KOSDAQ 시드(2,655종목) + `SymbolSource` 추상화. **다음:** 시총/유동성 기반 지능형 사전선별(top-N) — 현재는 단순 후보 상한.
 2. **DB 영속화(Cloud SQL)** — 결정/주문/감사로그(현재 인메모리).
 3. **GCP 인프라(Terraform)** — Secret Manager · Cloud SQL · Cloud Run · Scheduler→`/internal/tick`(OIDC).
 4. **데스크톱 앱(Tauri/React)** — 현황·킬스위치·모드.

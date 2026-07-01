@@ -3,7 +3,9 @@
 수집(holdings)→유니버스→스크리너→(조사 생략)→판단(결정적 폴백)→사이징→DRY_RUN 주문 까지
 실제 토스 데이터로 돈다. ❗실주문은 절대 나가지 않는다(DRY_RUN + 주문층 보장).
 
-실행: python server/scripts/tick_dry_run.py [워치리스트(쉼표구분), 기본 005930]
+실행:
+  python server/scripts/tick_dry_run.py 005930,000660   # 명시 워치리스트(기본 005930)
+  python server/scripts/tick_dry_run.py --seed [N]       # KRX 시드에서 상위 N(기본 15) 후보
 """
 
 from __future__ import annotations
@@ -35,10 +37,24 @@ def load_env() -> None:
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.engine.pipeline import DeterministicJudge, run_tick  # noqa: E402
+from app.engine.symbols import FileSymbolSource, resolve_symbols  # noqa: E402
 from app.orders.guardrails import KST  # noqa: E402
 from app.orders.models import TradingMode  # noqa: E402
 from app.orders.service import OrderService  # noqa: E402
 from app.toss.client import TossClient, TossConfig  # noqa: E402
+
+
+async def resolve_watchlist() -> list[str]:
+    """인자 파싱: `--seed [N]` 이면 KRX 시드에서 상위 N, 아니면 쉼표구분 워치리스트(기본 005930)."""
+    args = sys.argv[1:]
+    if args and args[0] == "--seed":
+        cap = int(args[1]) if len(args) > 1 and args[1].isdigit() else 15
+        seed = Path(__file__).resolve().parents[1] / "data" / "krx_symbols.json"
+        watch = await resolve_symbols(FileSymbolSource(seed), limit=cap)
+        print(f"심볼 소스=KRX 시드({seed.name}) · 상한={cap} · 후보 {len(watch)}개")
+        return watch
+    raw = args[0] if args else "005930"
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 async def main() -> int:
@@ -52,7 +68,7 @@ async def main() -> int:
         print("[중단] 토스 자격증명이 채워지지 않았습니다.")
         return 1
 
-    watch = [s.strip() for s in (sys.argv[1] if len(sys.argv) > 1 else "005930").split(",") if s.strip()]
+    watch = await resolve_watchlist()
     svc = OrderService(mode=TradingMode.DRY_RUN)
 
     print(f"틱 DRY_RUN 라이브 점검 · 워치리스트={watch} · ❗주문 미전송")

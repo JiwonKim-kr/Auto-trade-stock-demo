@@ -27,8 +27,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     research_top_n: int = 5
 
-    # 임시 유니버스: 쉼표 구분 종목코드(외부 KRX 소스 연동 전까지). 보유 종목은 항상 평가됨.
+    # 워치리스트: 쉼표 구분 종목코드. 명시 의도 → 심볼 소스보다 우선·항상 평가. 보유 종목도 항상 평가됨.
     watchlist: str = ""
+
+    # 심볼 소스(외부 KRX 시드). 경로 지정 시 FileSymbolSource 로 전 종목 유니버스를 공급.
+    # 미지정(기본)이면 워치리스트만 — 기존 동작 보존. 페처: scripts/fetch_krx_symbols.py
+    symbol_source_path: str | None = None
+    # 한 틱 후보 상한(캔들은 종목별 호출 → 레이트리밋 보호). 워치리스트 우선 포함분도 이 상한에 포함.
+    universe_max_symbols: int = 40
 
     # 가드레일 한도 (KRW)
     per_order_max_krw: Decimal = Decimal("100000")

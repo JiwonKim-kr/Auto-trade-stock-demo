@@ -21,6 +21,7 @@ from app.api.deps import get_order_service, get_toss_client, require_api_key
 from app.engine.llm import ClaudeJudge
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.research import WebSearchResearch
+from app.engine.symbols import FileSymbolSource, resolve_symbols
 from app.orders.guardrails import KST
 from app.orders.service import OrderService
 from app.toss.client import TossClient
@@ -104,6 +105,14 @@ async def tick(
     """거래 틱: 수집→유니버스→스크리너→조사→판단→사이징→DRY_RUN 주문. 운영은 OIDC 권장(TODO)."""
     settings = request.app.state.settings
     watch = [s.strip() for s in (settings.watchlist or "").split(",") if s.strip()]
+
+    # 심볼 소스 설정 시: KRX 시드 ∪ 워치리스트(우선) → 후보 상한 적용. 미설정이면 워치리스트만(기존 동작).
+    if settings.symbol_source_path:
+        watch = await resolve_symbols(
+            FileSymbolSource(settings.symbol_source_path),
+            limit=settings.universe_max_symbols,
+            include=watch,
+        )
 
     if settings.anthropic_api_key:
         judge, research = ClaudeJudge(), WebSearchResearch()

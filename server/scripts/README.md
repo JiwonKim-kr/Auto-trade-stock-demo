@@ -14,14 +14,17 @@ Copy-Item server/scripts/.env.example server/scripts/.env
 |---|---|---|
 | `toss_smoke.py` | 토스 실응답 **원시 덤프** + `accountSeq` 자동 판별(인사이트 §4). 필드 확정용 첫 코드 | 없음(stdlib) |
 | `probe_candles.py` | `/candles` 등 엔드포인트 **파라미터/응답 형태 발견** 프로브 (`"symbol=005930&interval=1d"`) | 없음(stdlib) |
+| `fetch_krx_symbols.py` | **KRX 심볼 시드 생성**(KOSPI+KOSDAQ → `data/krx_symbols.json`). out-of-band(틱 중 호출 아님), 주기적 갱신 | 없음(stdlib) |
 | `live_check.py` | **운영 클라이언트**(httpx + Pydantic 모델)로 라이브 읽기 전용 점검 | 앱 패키지 |
-| `tick_dry_run.py` | **전 거래 파이프라인**을 실계좌로 1회 DRY_RUN 실행(`[워치리스트]`) | 앱 패키지 |
+| `tick_dry_run.py` | **전 거래 파이프라인**을 실계좌로 1회 DRY_RUN 실행(`[워치리스트]` 또는 `--seed [N]`) | 앱 패키지 |
 
 ```powershell
 python server/scripts/toss_smoke.py
 python server/scripts/probe_candles.py "symbol=005930&interval=1d"
+python server/scripts/fetch_krx_symbols.py                  # KRX 시드 갱신(공개 데이터, 자격증명 무관)
 python server/scripts/live_check.py
-python server/scripts/tick_dry_run.py 005930,000660
+python server/scripts/tick_dry_run.py 005930,000660         # 명시 워치리스트
+python server/scripts/tick_dry_run.py --seed 15             # KRX 시드 상위 15 후보로 DRY_RUN
 ```
 
 `.env` 탐색 순서: 스크립트 폴더(`server/scripts/`) → `server/` → 현재 작업폴더.
