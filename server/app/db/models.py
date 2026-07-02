@@ -89,6 +89,29 @@ class AuditRow(Base):
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class PositionSnapshotRow(Base):
+    """포지션 스냅샷 헤더 — 리컨실 기준선. 보유 0종목도 스냅샷으로 성립(헤더 분리 이유)."""
+
+    __tablename__ = "position_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))   # UTC 정규화(주문 created_at 과 비교)
+    item_count: Mapped[int] = mapped_column(default=0)
+
+
+class PositionRow(Base):
+    """스냅샷 1종목분. 수량이 리컨실 대상, 평단가/통화는 감사·표시용."""
+
+    __tablename__ = "positions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("position_snapshots.id"), index=True)
+    symbol: Mapped[str] = mapped_column(Text)
+    quantity: Mapped[str] = mapped_column(Text)          # 정확 10진 문자열(소수점 주문 수용)
+    avg_price: Mapped[str | None] = mapped_column(Text, nullable=True)
+    currency: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class EngineStateRow(Base):
     """엔진 상태 단일행(id=1) — 킬스위치·서킷브레이커가 재시작에도 생존."""
 

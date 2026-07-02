@@ -20,9 +20,18 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.db.models import AuditRow, DecisionRow, EngineStateRow, OrderRow, TickRow
+from app.db.models import (
+    AuditRow,
+    DecisionRow,
+    EngineStateRow,
+    OrderRow,
+    PositionRow,
+    PositionSnapshotRow,
+    TickRow,
+)
 from app.orders.guardrails import KST
 from app.orders.models import OrderResult, OrderStatus
+from app.orders.reconcile import PositionSnapshot
 
 if TYPE_CHECKING:  # 타입 전용(런타임 결합 회피) — db 층은 engine 을 모르는 게 원칙
     from app.engine.pipeline import TickResult
@@ -107,6 +116,51 @@ class Repository:
         for qty, price, amount in rows:
             total += _dec(amount) if amount else _dec(qty) * _dec(price)
         return total
+
+    # ── 포지션 스냅샷 (리컨실 기준선) ──────────────────────────────────────────
+    async def save_positions_snapshot(self, ts: datetime, items: list[PositionSnapshot]) -> int:
+        """현재 보유를 스냅샷으로 저장(0종목도 성립). ts 는 UTC 정규화(주문 created_at 과 비교)."""
+        async with self._sm() as s, s.begin():
+            head = PositionSnapshotRow(ts=ts.astimezone(timezone.utc), item_count=len(items))
+            s.add(head)
+            await s.flush()
+            for it in items:
+                s.add(PositionRow(snapshot_id=head.id, symbol=it.symbol,
+                                  quantity=str(it.quantity),
+                                  avg_price=str(it.avg_price) if it.avg_price is not None else None,
+                                  currency=it.currency))
+            return head.id
+
+    async def load_latest_positions(self) -> tuple[datetime, dict[str, Decimal]] | None:
+        """최신 스냅샷 → (ts, {symbol: 수량}). 없으면 None(첫 실행 = 기준선 생성)."""
+        async with self._sm() as s:
+            head = (await s.execute(
+                select(PositionSnapshotRow).order_by(PositionSnapshotRow.id.desc()).limit(1)
+            )).scalars().first()
+            if head is None:
+                return None
+            rows = (await s.execute(
+                select(PositionRow).where(PositionRow.snapshot_id == head.id))).scalars().all()
+            return head.ts, {r.symbol: Decimal(r.quantity) for r in rows}
+
+    async def submitted_qty_since(self, ts: datetime) -> dict[str, Decimal]:
+        """ts 이후 전송(SUBMITTED) 주문의 심볼별 순증감(매수+·매도−) — 기대 수량 근사.
+
+        ⚠️ 전송 기준(체결 아님): 미체결/부분체결은 불일치로 뜬다(보수적 오탐). 체결 API 연동 시 정밀화.
+        """
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(OrderRow.symbol, OrderRow.side, OrderRow.quantity)
+                .where(OrderRow.status == OrderStatus.SUBMITTED.value,
+                       OrderRow.created_at > ts.astimezone(timezone.utc))
+            )).all()
+        delta: dict[str, Decimal] = {}
+        for symbol, side, qty in rows:
+            if not qty:
+                continue
+            sign = Decimal(1) if side == "BUY" else Decimal(-1)
+            delta[symbol] = delta.get(symbol, Decimal(0)) + sign * Decimal(qty)
+        return delta
 
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────
     async def load_engine_state(self) -> tuple[bool, dict] | None:

@@ -75,6 +75,7 @@ async def run_tick(
     entry_gate: EntryGate | None = None,
     daily_buy_used_krw: Decimal = Decimal(0),
     regime_config: RegimeConfig | None = None,
+    holdings=None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
@@ -89,8 +90,10 @@ async def run_tick(
                           cost_gated=cost_gated or [],
                           regime=regime.as_dict() if regime else {})
 
-    # 1) 수집: 보유 + 워치리스트 → 심볼 union
-    holdings = await toss.get_holdings()
+    # 1) 수집: 보유 + 워치리스트 → 심볼 union. holdings 는 호출자가 선조회해 주입 가능
+    #    (라우트가 리컨실에 이미 조회한 것을 재사용 — 레이트리밋 보호, 이중 조회 방지)
+    if holdings is None:
+        holdings = await toss.get_holdings()
     held_symbols = [i.symbol for i in holdings.items]
     symbols = list(dict.fromkeys([*watchlist, *held_symbols]))
     if not symbols:

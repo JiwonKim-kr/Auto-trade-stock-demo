@@ -29,6 +29,8 @@ from app.orders.models import (
     Side,
     TradingMode,
 )
+from app.orders.reconcile import PositionSnapshot
+from app.orders.service import OrderService
 from app.toss.models import BuyingPower, Candle, Holdings, Price, Stock
 
 FIX = Path(__file__).parent / "fixtures"
@@ -119,6 +121,36 @@ async def test_audit_row(tmp_path):
     assert row.actor == "api" and json.loads(row.payload_json)["engaged"] is True
 
 
+# ── 포지션 스냅샷 + 전송 순증감 (리컨실 재료) ─────────────────────────────────
+async def test_positions_snapshot_roundtrip(tmp_path):
+    repo = await make_repo(tmp_path)
+    assert await repo.load_latest_positions() is None            # 첫 실행 = 기준선 없음
+    items = [PositionSnapshot(symbol="005930", quantity=Decimal("2.5"),
+                              avg_price=Decimal("68000"), currency="KRW")]
+    await repo.save_positions_snapshot(NOW_KST, items)
+    ts, qmap = await repo.load_latest_positions()
+    assert qmap == {"005930": Decimal("2.5")}
+    await repo.save_positions_snapshot(NOW_KST, [])              # 전량 청산(0종목)도 스냅샷 성립
+    _, empty = await repo.load_latest_positions()
+    assert empty == {}
+
+
+async def test_submitted_qty_since_window_and_sign(tmp_path):
+    repo = await make_repo(tmp_path)
+    before = datetime(2026, 7, 2, 9, 0, tzinfo=KST).astimezone(timezone.utc)
+    after = datetime(2026, 7, 2, 11, 0, tzinfo=KST).astimezone(timezone.utc)
+    orders = [
+        order_result("s-old", status=OrderStatus.SUBMITTED, qty="9", created_at=before),   # 창 밖
+        order_result("s-buy", status=OrderStatus.SUBMITTED, qty="5", created_at=after),
+        order_result("s-sell", side=Side.SELL, status=OrderStatus.SUBMITTED, qty="2",
+                     created_at=after),
+        order_result("s-dry", status=OrderStatus.DRY_RUN, qty="7", created_at=after),      # 미전송
+    ]
+    await repo.record_tick(tick_result(orders), NOW_KST)
+    delta = await repo.submitted_qty_since(NOW_KST)              # 10:00 KST 이후
+    assert delta == {"005930": Decimal("3")}                     # +5 −2, DRY_RUN·창밖 제외
+
+
 # ── 라우트 통합 (ASGI + lifespan 수동 구동) ───────────────────────────────────
 class FakeToss:
     async def get_holdings(self):
@@ -181,3 +213,79 @@ async def test_kill_switch_route_persists_and_audits(tmp_path):
     async with repo._sm() as s:
         audit = (await s.execute(select(AuditRow))).scalars().one()
     assert audit.action == "kill_switch"
+
+
+# ── 리컨실 라우트 통합 ─────────────────────────────────────────────────────────
+async def test_tick_reconcile_baseline_then_ok(tmp_path):
+    repo = await make_repo(tmp_path)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r1 = await c.post("/internal/tick", headers=KEY)
+            r2 = await c.post("/internal/tick", headers=KEY)
+    assert r1.json()["reconcile"]["status"] == "BASELINE"     # 첫 틱 = 기준선 생성
+    assert r2.json()["reconcile"]["status"] == "OK"           # 변화 없음 = 일치
+
+
+async def test_tick_reconcile_mismatch_dry_run_records_without_halt(tmp_path):
+    repo = await make_repo(tmp_path)
+    # 실제(픽스처)와 어긋난 기준선을 선주입 → 외부 변화 감지 시나리오
+    await repo.save_positions_snapshot(NOW_KST, [
+        PositionSnapshot(symbol="005935", quantity=Decimal("999999"))])
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r1 = await c.post("/internal/tick", headers=KEY)
+            r2 = await c.post("/internal/tick", headers=KEY)
+        halted = app.state.order_service.kill_switch
+    body = r1.json()["reconcile"]
+    assert body["status"] == "MISMATCH"
+    assert any(d["symbol"] == "005935" for d in body["discrepancies"])
+    assert halted is False                                     # DRY_RUN: 기록만, halt 없음
+    assert r2.json()["reconcile"]["status"] == "OK"            # 기준선 전진 → 반복 경보 없음
+    async with repo._sm() as s:
+        audits = (await s.execute(select(AuditRow))).scalars().all()
+    assert any(a.action == "reconcile_mismatch" for a in audits)
+
+
+async def test_reconcile_route_live_mismatch_engages_kill_switch(tmp_path):
+    repo = await make_repo(tmp_path)
+    await repo.save_positions_snapshot(NOW_KST, [
+        PositionSnapshot(symbol="005935", quantity=Decimal("999999"))])
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        app.state.order_service = OrderService(mode=TradingMode.LIVE)   # 실자금 모드 시뮬레이션
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/reconcile", headers=KEY)
+        halted = app.state.order_service.kill_switch
+    assert r.json()["status"] == "MISMATCH"
+    assert halted is True                                      # LIVE 불일치 → 거래 중단
+    ks, _ = await repo.load_engine_state()
+    assert ks is True                                          # 재시작에도 유지
+
+
+async def test_reconcile_route_disabled_without_repo():
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/reconcile", headers=KEY)
+    assert r.json()["status"] == "DISABLED"
+
+
+async def test_reconcile_route_creates_baseline_without_advancing(tmp_path):
+    repo = await make_repo(tmp_path)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r1 = await c.get("/api/reconcile", headers=KEY)
+            r2 = await c.get("/api/reconcile", headers=KEY)
+    assert r1.json()["status"] == "BASELINE" and r2.json()["status"] == "OK"
