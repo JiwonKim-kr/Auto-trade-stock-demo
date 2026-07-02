@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     entry_cost_multiple: Decimal = Decimal("3.5")       # 진입 문턱 = 라운드트립 × 이 값(0이면 게이트 사실상 해제)
     entry_move_multiple: Decimal = Decimal("3.0")       # 기대이동폭 = confidence × σ × 이 값
 
+    # 레짐 필터: 시장 프록시 σ 국면별 신규 매수 노출 배수(거시=예측 아님·대응). 빈 값이면 비활성.
+    regime_symbol: str = "069500"                       # KODEX 200 (시장 프록시)
+    regime_calm_vol: Decimal = Decimal("0.010")         # 일간 σ < 1% → CALM(×1.0)
+    regime_stress_vol: Decimal = Decimal("0.020")       # 일간 σ ≥ 2% → STRESS(신규 중단)
+    regime_elevated_multiplier: Decimal = Decimal("0.5")
+    regime_stress_multiplier: Decimal = Decimal("0")
+
 
 @lru_cache
 def get_settings() -> Settings:

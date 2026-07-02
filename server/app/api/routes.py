@@ -23,6 +23,7 @@ from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.llm import ClaudeJudge
 from app.engine.pipeline import DeterministicJudge, run_tick
+from app.engine.regime import RegimeConfig
 from app.engine.research import WebSearchResearch
 from app.engine.symbols import FileSymbolSource, resolve_symbols
 from app.orders.guardrails import KST
@@ -144,6 +145,17 @@ async def tick(
         ),
     )
 
+    # 레짐 필터(REGIME_SYMBOL 빈 값이면 비활성)
+    regime_config = None
+    if settings.regime_symbol:
+        regime_config = RegimeConfig(
+            symbol=settings.regime_symbol,
+            calm_vol=settings.regime_calm_vol,
+            stress_vol=settings.regime_stress_vol,
+            elevated_multiplier=settings.regime_elevated_multiplier,
+            stress_multiplier=settings.regime_stress_multiplier,
+        )
+
     # 영속화 설정 시: 오늘 매수 사용액을 DB에서 읽어 일일 한도를 틱 경계 너머로 강제
     now = datetime.now(KST)
     repo = request.app.state.repo
@@ -154,7 +166,7 @@ async def tick(
     result = await run_tick(
         toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
         now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
-        daily_buy_used_krw=daily_used,
+        daily_buy_used_krw=daily_used, regime_config=regime_config,
     )
 
     tick_id = None
@@ -172,6 +184,7 @@ async def tick(
         "universe_symbols": result.universe_symbols,
         "candidates": result.candidates,
         "cost_gated": result.cost_gated,
+        "regime": result.regime,
         "decisions": [d.model_dump() for d in result.decisions],
         "orders": result.orders,
         "note": result.note,

@@ -56,6 +56,7 @@ class Repository:
                 candidates=result.candidates,
                 note=result.note,
                 cost_gated_json=json.dumps(result.cost_gated, ensure_ascii=False),
+                regime_json=json.dumps(result.regime, ensure_ascii=False),
             )
             s.add(tick)
             await s.flush()                      # tick.id 확보

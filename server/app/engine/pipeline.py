@@ -25,6 +25,7 @@ from app.engine.llm import (
     candidate_contexts,
     decide_candidates,
 )
+from app.engine.regime import RegimeAssessment, RegimeConfig, RegimeLevel, assess_regime
 from app.engine.research import ResearchProvider, research_candidates
 from app.engine.screener import ScreenConfig, ScreenResult, screen_symbol
 from app.engine.universe import partition_universe
@@ -45,6 +46,7 @@ class TickResult:
     circuit_breaker: bool = False
     circuit_breaker_reason: str = ""
     cost_gated: list[str] = field(default_factory=list)   # 비용 게이트로 차단된 매수 후보
+    regime: dict = field(default_factory=dict)             # 레짐 판정(level·σ·배수) — 미평가 시 빈 dict
 
 
 class DeterministicJudge:
@@ -72,17 +74,20 @@ async def run_tick(
     research_top_n: int | None = 5,
     entry_gate: EntryGate | None = None,
     daily_buy_used_krw: Decimal = Decimal(0),
+    regime_config: RegimeConfig | None = None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
 
     cb = order_service.circuit_breaker
+    regime: RegimeAssessment | None = None
 
     def _result(candidates, decisions, orders, universe, note="", cost_gated=None) -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
                           candidates=candidates, decisions=decisions, orders=orders, note=note,
                           circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason,
-                          cost_gated=cost_gated or [])
+                          cost_gated=cost_gated or [],
+                          regime=regime.as_dict() if regime else {})
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union
     holdings = await toss.get_holdings()
@@ -132,6 +137,18 @@ async def run_tick(
     if not candidates:
         return _result(0, [], [], sorted(eligible), note="후보 없음")
 
+    # 6b) 레짐 필터(선택) — 시장 프록시 σ → 노출 배수. 조회 실패는 UNKNOWN(배수 1.0, 종목별
+    #     방어는 게이트·가드레일이 담당). 판정 요약은 LLM 컨텍스트([시장 레짐])로도 전달.
+    if regime_config is not None:
+        try:
+            regime_candles = await toss.get_candles(regime_config.symbol, "1d")
+            regime = assess_regime([float(c.close_price) for c in regime_candles], regime_config)
+        except Exception:
+            regime = RegimeAssessment(RegimeLevel.UNKNOWN, None, Decimal(1),
+                                      f"레짐 프록시({regime_config.symbol}) 조회 실패 — 배수 1.0")
+        for c in candidates:
+            c.market_regime = f"{regime.level.value} — {regime.reason}"
+
     # 7) 조사 (상위 N) — 선택
     if research is not None:
         await research_candidates(candidates, research, top_n=research_top_n)
@@ -153,7 +170,8 @@ async def run_tick(
             if not entry_gate.evaluate(d.confidence, ctx.recent_closes).passed:
                 cost_gated.append(d.symbol)
                 continue
-        req = allocate(d, ctx, order_service.config)
+        req = allocate(d, ctx, order_service.config,
+                       exposure_multiplier=regime.multiplier if regime else Decimal(1))
         if req is None:
             continue
         price = Decimal(str(ctx.indicators.last_close)) if ctx.indicators else Decimal(0)

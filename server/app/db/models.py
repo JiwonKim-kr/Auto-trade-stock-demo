@@ -37,6 +37,7 @@ class TickRow(Base):
     candidates: Mapped[int] = mapped_column(default=0)
     note: Mapped[str] = mapped_column(Text, default="")
     cost_gated_json: Mapped[str] = mapped_column(Text, default="[]")
+    regime_json: Mapped[str] = mapped_column(Text, default="{}")   # 레짐 판정(사이징 축소 근거 감사)
 
 
 class DecisionRow(Base):

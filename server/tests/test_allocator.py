@@ -67,6 +67,31 @@ def test_buy_notional_within_per_order_max():
     assert o.estimated_notional() <= CFG.per_order_max_krw   # 가드레일 통과 보장
 
 
+# ── 레짐 노출 배수 ────────────────────────────────────────────────────────────
+def test_buy_exposure_multiplier_scales():
+    o = allocate(dec("BUY", 1.0), ctx(price=10000.0), CFG,
+                 exposure_multiplier=Decimal("0.5"))    # 100000×0.5 → 5주
+    assert o.quantity == Decimal("5")
+
+
+def test_buy_exposure_multiplier_zero_blocks():
+    assert allocate(dec("BUY", 1.0), ctx(price=10000.0), CFG,
+                    exposure_multiplier=Decimal(0)) is None   # STRESS: 신규 진입 없음
+
+
+def test_buy_exposure_multiplier_clamped_to_one():
+    o = allocate(dec("BUY", 1.0), ctx(price=10000.0), CFG,
+                 exposure_multiplier=Decimal("2"))      # 레버리지 금지 → ×1과 동일
+    assert o.quantity == Decimal("10")
+
+
+def test_sell_ignores_exposure_multiplier():
+    o = allocate(dec("SELL", 0.9),
+                 ctx(price=10000.0, already_held=True, held_quantity=Decimal("7")), CFG,
+                 exposure_multiplier=Decimal(0))        # STRESS 여도 청산은 전량
+    assert o.side is Side.SELL and o.quantity == Decimal("7")
+
+
 def test_sell_held_liquidates_full():
     o = allocate(dec("SELL", 0.9),
                  ctx(price=10000.0, already_held=True, held_quantity=Decimal("7")), CFG)

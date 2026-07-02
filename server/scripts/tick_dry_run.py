@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.engine.costs import EntryGate  # noqa: E402
 from app.engine.pipeline import DeterministicJudge, run_tick  # noqa: E402
+from app.engine.regime import RegimeConfig  # noqa: E402
 from app.engine.symbols import FileSymbolSource, resolve_symbols  # noqa: E402
 from app.orders.guardrails import KST  # noqa: E402
 from app.orders.models import TradingMode  # noqa: E402
@@ -76,12 +77,14 @@ async def main() -> int:
     async with TossClient(cfg) as toss:
         res = await run_tick(toss=toss, order_service=svc, watchlist=watch,
                              judge=DeterministicJudge(), now=datetime.now(KST),
-                             entry_gate=EntryGate())
+                             entry_gate=EntryGate(), regime_config=RegimeConfig())
 
     print(f"\nmode={res.mode}  kill_switch={res.kill_switch}  circuit_breaker={res.circuit_breaker}")
     if res.circuit_breaker:
         print(f"  ⚠️ {res.circuit_breaker_reason}")
     print(f"유니버스(적격)={res.universe_symbols}  후보={res.candidates}")
+    if res.regime:
+        print(f"레짐: {res.regime.get('level')}  ×{res.regime.get('multiplier')}  · {res.regime.get('reason')}")
     if res.cost_gated:
         print(f"비용 게이트 차단(엣지<비용): {res.cost_gated}")
     print("결정:")

@@ -12,6 +12,7 @@ from decimal import Decimal
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.llm import Action, Decision
 from app.engine.pipeline import DeterministicJudge, run_tick
+from app.engine.regime import RegimeConfig
 from app.engine.screener import ScreenConfig
 from app.orders.guardrails import KST
 from app.orders.models import OrderStatus, Side, TradingMode
@@ -152,6 +153,59 @@ async def test_tick_cost_gate_allows_when_disabled():
                          screen_config=LENIENT, entry_gate=gate)
     assert res.cost_gated == []
     assert [o for o in res.orders if o.request.side is Side.BUY]       # 매수 주문 존재
+
+
+def _volatile_candles(swing=0.03, n=13) -> list[Candle]:
+    closes, price = [], 1000.0
+    for i in range(n):
+        closes.append(price)
+        price *= (1 + swing) if i % 2 == 0 else (1 - swing)
+    return [Candle(timestamp=f"2026-06-{1 + i:02d}T00:00:00.000+09:00",
+                   open_price=c, high_price=c, low_price=c, close_price=c,
+                   volume=1_000_000, currency="KRW") for i, c in enumerate(closes)]
+
+
+class RegimeToss(FakeToss):
+    """레짐 프록시(069500)만 고변동 캔들 — 후보 종목은 평온한 상승 유지."""
+
+    async def get_candles(self, symbol, interval="1d"):
+        if symbol == "069500":
+            return _volatile_candles()
+        return await super().get_candles(symbol, interval)
+
+
+async def test_tick_stress_regime_blocks_new_buys():
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=RegimeToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, regime_config=RegimeConfig())
+    assert res.regime["level"] == "STRESS" and res.regime["multiplier"] == "0"
+    assert not [o for o in res.orders if o.request.side is Side.BUY]   # 신규 매수 없음
+
+
+async def test_tick_calm_regime_normal_sizing():
+    # 프록시도 완만한 상승(σ 작음) → CALM ×1 → 매수 정상 생성
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=FakeToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, regime_config=RegimeConfig())
+    assert res.regime["level"] == "CALM" and res.regime["multiplier"] == "1"
+    assert [o for o in res.orders if o.request.side is Side.BUY]
+
+
+async def test_tick_regime_fetch_failure_is_unknown_multiplier_one():
+    class FailToss(FakeToss):
+        async def get_candles(self, symbol, interval="1d"):
+            if symbol == "069500":
+                raise RuntimeError("프록시 조회 실패")
+            return await super().get_candles(symbol, interval)
+
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=FailToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, regime_config=RegimeConfig())
+    assert res.regime["level"] == "UNKNOWN" and res.regime["multiplier"] == "1"
+    assert [o for o in res.orders if o.request.side is Side.BUY]       # 매수 막히지 않음
 
 
 async def test_tick_daily_buy_used_carries_across_ticks():

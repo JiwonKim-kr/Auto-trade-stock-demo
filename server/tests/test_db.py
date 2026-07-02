@@ -53,7 +53,7 @@ def order_result(client_order_id: str, side=Side.BUY, status=OrderStatus.DRY_RUN
 def tick_result(orders, decisions=None) -> TickResult:
     return TickResult(mode="DRY_RUN", kill_switch=False, universe_symbols=["005930"],
                       candidates=1, decisions=decisions or [], orders=orders,
-                      cost_gated=["035720"])
+                      cost_gated=["035720"], regime={"level": "ELEVATED", "multiplier": "0.5"})
 
 
 # ── repo 단위 ─────────────────────────────────────────────────────────────────
@@ -67,6 +67,7 @@ async def test_record_tick_persists_all(tmp_path):
         d = (await s.execute(select(DecisionRow))).scalars().one()
         o = (await s.execute(select(OrderRow))).scalars().one()
     assert tick.candidates == 1 and json.loads(tick.cost_gated_json) == ["035720"]
+    assert json.loads(tick.regime_json)["level"] == "ELEVATED"        # 사이징 축소 근거 감사
     assert d.tick_id == tick_id and d.action == "BUY" and d.rationale == "근거"
     assert o.client_order_id == "o-1" and o.quantity == "2" and o.price == "10000"
     assert o.trade_date == "2026-07-02"                      # KST 날짜
