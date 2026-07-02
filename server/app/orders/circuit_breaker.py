@@ -101,3 +101,25 @@ class CircuitBreaker:
             "daily_halt": self._daily_halt_active,
             "drawdown_halt": self._drawdown_halt,
         }
+
+    # ── 영속화 (재시작 생존 — Cloud Run min=0 은 재시작이 잦다) ────────────────
+    def dump_state(self) -> dict:
+        """JSON 직렬화 가능한 내부 상태(고점·낙폭·래치). repo.save_engine_state 용."""
+        return {
+            "high_water_mark": str(self.high_water_mark) if self.high_water_mark is not None else None,
+            "drawdown": str(self.drawdown),
+            "daily_halt_date": self._daily_halt_date.isoformat() if self._daily_halt_date else None,
+            "drawdown_halt": self._drawdown_halt,
+            "today": self._today.isoformat() if self._today else None,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """dump_state 역직렬화. reason 은 다음 assess 가 재구성(tripped 는 래치로 즉시 유효)."""
+        hwm = state.get("high_water_mark")
+        self.high_water_mark = Decimal(hwm) if hwm else None
+        self.drawdown = Decimal(state.get("drawdown") or "0")
+        dhd = state.get("daily_halt_date")
+        self._daily_halt_date = date.fromisoformat(dhd) if dhd else None
+        self._drawdown_halt = bool(state.get("drawdown_halt", False))
+        today = state.get("today")
+        self._today = date.fromisoformat(today) if today else None

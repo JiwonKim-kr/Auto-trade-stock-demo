@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.core.config import load_trading_mode
 from app.core.settings import get_settings
+from app.db.repo import Repository
+from app.db.session import init_db, make_engine, make_sessionmaker
 from app.orders.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from app.orders.guardrails import GuardrailConfig
 from app.orders.service import OrderService
@@ -50,6 +52,26 @@ async def lifespan(app: FastAPI):
         ),
     )
 
+    # DB 영속화(선택): 틱/결정/주문 기록 + 킬스위치·서킷브레이커 상태 재시작 생존
+    app.state.repo = None
+    app.state.db_engine = None
+    if settings.database_url:
+        engine = make_engine(settings.database_url)
+        await init_db(engine)
+        repo = Repository(make_sessionmaker(engine))
+        app.state.repo, app.state.db_engine = repo, engine
+        state = await repo.load_engine_state()
+        if state is not None:
+            kill_switch, breaker = state
+            if kill_switch:
+                app.state.order_service.engage_kill_switch()
+                logger.warning("영속화된 킬스위치 ON 복원 — 해제 전까지 주문 차단")
+            if breaker:
+                app.state.order_service.circuit_breaker.restore_state(breaker)
+        logger.info("DB 영속화 활성")
+    else:
+        logger.warning("DATABASE_URL 미설정 — 인메모리(재시작 시 원장/엔진 상태 소실)")
+
     app.state.toss_client = None
     if settings.toss_client_id and settings.toss_client_secret:
         app.state.toss_client = TossClient(
@@ -70,6 +92,8 @@ async def lifespan(app: FastAPI):
     finally:
         if app.state.toss_client is not None:
             await app.state.toss_client.aclose()
+        if app.state.db_engine is not None:
+            await app.state.db_engine.dispose()
 
 
 def create_app() -> FastAPI:

@@ -154,6 +154,18 @@ async def test_tick_cost_gate_allows_when_disabled():
     assert [o for o in res.orders if o.request.side is Side.BUY]       # 매수 주문 존재
 
 
+async def test_tick_daily_buy_used_carries_across_ticks():
+    # 오늘 이미 490,000 사용(DB 주입 가정) + cap 500,000 → 이번 틱 매수(≈16,000)도 일일 한도 초과
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=FakeToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, daily_buy_used_krw=Decimal("490000"))
+    buys = [o for o in res.orders if o.request.side is Side.BUY]
+    assert buys and all(
+        o.status is OrderStatus.REJECTED and "DAILY_BUY_CAP" in o.reason for o in buys
+    )
+
+
 async def test_tick_no_symbols_noop():
     class EmptyToss(FakeToss):
         async def get_holdings(self):

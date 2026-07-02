@@ -3,7 +3,7 @@ name = "toss-ai-trading-server"
 version = "0.1.0"
 description = "토스 기반 AI 자동매매 — 거래 서버(두뇌)"
 requires-python = ">=3.12"
-# 현재 코드가 실제로 import 하는 런타임 의존성만. (DB/퀀트는 아래 future 그룹 — 단계적으로 도입)
+# 현재 코드가 실제로 import 하는 런타임 의존성만. (퀀트 확장은 아래 future 그룹 — 단계적으로 도입)
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings",
     "anthropic",
+    "sqlalchemy>=2",     # DB 영속화(async ORM)
+    "asyncpg",           # 운영 드라이버(postgresql+asyncpg). 로컬/테스트는 aiosqlite(dev)
 ]
 
 [project.optional-dependencies]
@@ -20,17 +22,20 @@ dev = [
     "respx",
     "ruff",
     "mypy",
+    "aiosqlite",         # 테스트/로컬용 SQLite async 드라이버
 ]
-# 향후 단계(DB 영속화·퀀트 지표 확장)에서 도입 예정. 현재 코드는 아직 사용하지 않음.
+# 향후 단계(스키마 진화 시 alembic·퀀트 지표 확장)에서 도입 예정. 현재 코드는 아직 사용하지 않음.
 future = [
     "tenacity",
-    "sqlalchemy>=2",
-    "asyncpg",
     "alembic",
     "pandas",
     "numpy",
     "pandas-ta",
 ]
+
+# data/(KRX 시드)가 생기며 flat-layout 자동 탐색이 다중 패키지로 오인 → 명시적으로 app만 패키징
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

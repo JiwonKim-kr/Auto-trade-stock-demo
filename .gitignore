@@ -8,9 +8,14 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.egg-info/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# ── 로컬 DB (DATABASE_URL=sqlite 사용 시) ──
+*.db
+*.sqlite
 
 # ── Node / 데스크톱 프론트엔드 ──
 node_modules/

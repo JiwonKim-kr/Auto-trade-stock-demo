@@ -75,3 +75,24 @@ def test_clean_state_not_tripped():
     assert b.assess(Decimal("1000"), Decimal("0.02"), D1) is False
     assert b.reason == ""
     assert b.snapshot()["tripped"] is False
+
+
+# ── 영속화 직렬화 (재시작 생존) ────────────────────────────────────────────────
+def test_dump_restore_preserves_latches():
+    b = cb()
+    b.assess(Decimal("1000"), Decimal("-0.06"), D1)           # 일일 발동
+    b.assess(Decimal("800"), Decimal("-0.06"), D1)            # 낙폭 발동(HWM 1000)
+    state = b.dump_state()
+
+    b2 = cb()                                                  # 재시작 시뮬레이션
+    b2.restore_state(state)
+    assert b2.tripped is True                                  # 래치 생존
+    assert b2.high_water_mark == Decimal("1000")
+    # 복원 후에도 히스테리시스 이어짐: 925(-7.5%) 회복 → 해제, 일일은 다음날 리셋
+    assert b2.assess(Decimal("925"), Decimal("0"), D2) is False
+
+
+def test_dump_restore_empty_state_noop():
+    b = cb()
+    b.restore_state({})                                        # 빈 상태(첫 기동) 안전
+    assert b.tripped is False and b.high_water_mark is None

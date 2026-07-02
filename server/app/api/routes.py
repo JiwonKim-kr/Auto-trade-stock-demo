@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key
+from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.llm import ClaudeJudge
 from app.engine.pipeline import DeterministicJudge, run_tick
@@ -51,6 +53,7 @@ async def status_(request: Request, svc: OrderService = Depends(get_order_servic
         "circuit_breaker": svc.circuit_breaker.snapshot(),
         "market_open_now": market_open,
         "toss_connected": request.app.state.toss_client is not None,
+        "persistence": request.app.state.repo is not None,
         "guardrails": {
             "per_order_max_krw": str(cfg.per_order_max_krw),
             "daily_buy_cap_krw": str(cfg.daily_buy_cap_krw),
@@ -85,11 +88,17 @@ class KillSwitchBody(BaseModel):
 
 
 @api.post("/kill-switch")
-async def kill_switch(body: KillSwitchBody, svc: OrderService = Depends(get_order_service)) -> dict:
+async def kill_switch(
+    body: KillSwitchBody, request: Request, svc: OrderService = Depends(get_order_service)
+) -> dict:
     if body.engaged:
         svc.engage_kill_switch()
     else:
         svc.release_kill_switch()
+    repo = request.app.state.repo
+    if repo is not None:  # 재시작 생존 + 감사
+        await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
+        await repo.audit("api", "kill_switch", {"engaged": svc.kill_switch})
     return {"kill_switch": svc.kill_switch}
 
 
@@ -135,11 +144,26 @@ async def tick(
         ),
     )
 
+    # 영속화 설정 시: 오늘 매수 사용액을 DB에서 읽어 일일 한도를 틱 경계 너머로 강제
+    now = datetime.now(KST)
+    repo = request.app.state.repo
+    daily_used = Decimal(0)
+    if repo is not None:
+        daily_used = await repo.buy_notional_today(trade_date_kst(now))
+
     result = await run_tick(
         toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
-        now=datetime.now(KST), research_top_n=settings.research_top_n, entry_gate=entry_gate,
+        now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
+        daily_buy_used_krw=daily_used,
     )
+
+    tick_id = None
+    if repo is not None:  # 틱/결정/주문 전수 기록 + 엔진 상태(서킷브레이커) 저장
+        tick_id = await repo.record_tick(result, started_at=now)
+        await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
+
     return {
+        "tick_id": tick_id,
         "mode": result.mode,
         "kill_switch": result.kill_switch,
         "circuit_breaker": result.circuit_breaker,

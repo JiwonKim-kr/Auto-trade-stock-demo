@@ -71,6 +71,7 @@ async def run_tick(
     screen_config: ScreenConfig | None = None,
     research_top_n: int | None = 5,
     entry_gate: EntryGate | None = None,
+    daily_buy_used_krw: Decimal = Decimal(0),
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
@@ -141,7 +142,8 @@ async def run_tick(
     # 9) 사이징 + 주문 (DRY_RUN; 실주문 0은 주문층이 보장)
     ctx_by = {c.symbol: c for c in candidates}
     base_ctx = context_from_holdings(holdings, now, kill_switch=ks)
-    daily_used = Decimal(0)
+    # 오늘 이미 쓴 매수액에서 시작(호출자가 DB 합산 주입) — 일일 한도를 틱 경계 너머로 강제
+    daily_used = daily_buy_used_krw
     orders: list[OrderResult] = []
     cost_gated: list[str] = []
     for d in decisions:

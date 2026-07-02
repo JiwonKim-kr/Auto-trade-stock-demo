@@ -103,25 +103,27 @@
 
 ## 4. 데이터 계층 — Cloud SQL (PostgreSQL 16)
 
-**핵심 원칙**: 토스 금액은 **문자열 + 통화 버킷**으로 온다. 저장은 **`NUMERIC`(가격/수량) + 행마다
-`currency` 컬럼**, 코드에선 **`Decimal`만 사용(float 금지)**. `profitLoss.rate`는 분수이므로 표시 시 ×100.
+**핵심 원칙**: 토스 금액은 **문자열 + 통화 버킷**으로 온다. 코드에선 **`Decimal`만 사용(float 금지)**.
+저장은 **정확한 10진 문자열(TEXT)** — `NUMERIC`은 PG 에선 exact 지만 SQLite(로컬/테스트)에선
+REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 매수 사용액 등)은 조회 후 Python
+`Decimal`로(하루 주문 수가 한도로 유계라 부담 없음). `profitLoss.rate`는 분수이므로 표시 시 ×100.
 
-**스키마 스케치**(초안):
+**구현된 스키마**(`app/db/models.py`):
 
 | 테이블 | 핵심 컬럼 | 목적 |
 |---|---|---|
-| `accounts` | account_no, **account_seq**, account_type | 헤더용 식별자(정수 seq!) |
-| `universe_symbols` | symbol, market, source, is_common_share, leverage_factor, status… | 외부 심볼 소스 + 마스터 플래그(보수적 제외) |
-| `positions` | symbol, currency, quantity(Decimal), avg_price, market_value, pl_rate | 보유 스냅샷 |
-| `ticks` | started_at, status, candidates_count, notes | 틱 실행 직렬화/추적 |
-| `decisions` | tick_id, symbol, action(BUY/SELL/HOLD), size, **rationale(text)**, model | LLM 근거 전수 로깅 |
-| `orders` | **client_order_id(UNIQUE)**, symbol, side, type, qty, price, mode, status, toss_order_id | 멱등키·DRY/LIVE·상태 |
-| `audit_log` | ts, actor, action, payload(jsonb), result | 전 결정·주문·모드전환 감사 |
-| `guardrail_state` | kill_switch(bool), daily_buy_used, limits(jsonb) | 킬스위치·한도 현재값 |
+| `ticks` | started_at, mode, kill_switch, circuit_breaker, candidates, note, cost_gated | 틱 실행 추적(관측/감사 뼈대) |
+| `decisions` | tick_id, symbol, action(BUY/SELL/HOLD), confidence, **rationale(text)** | LLM 근거 전수 로깅 |
+| `orders` | **client_order_id(UNIQUE)**, symbol, side, qty/price/amount(정확 문자열), mode, status, **trade_date(KST)** | 멱등 2차 방어 · REJECTED 포함 전수 · 일일 집계 |
+| `audit_log` | ts, actor, action, payload(json text) | 컨트롤플레인 감사(킬스위치 토글 등) |
+| `engine_state` | 단일행(id=1): kill_switch, breaker_json | 킬스위치·서킷브레이커 **재시작 생존**(Cloud Run min=0) |
 
-- 마이그레이션: **Alembic**. 접속: Cloud Run → Cloud SQL은 **Cloud SQL Connector**(또는 유닉스 소켓),
-  비밀번호/접속정보는 **Secret Manager**.
-- `client_order_id` **UNIQUE 제약**으로 DB 레벨에서도 중복주문 차단(멱등 2중 방어).
+- **DB I/O 는 경계(라우트/lifespan)에만** — `run_tick`은 DB를 모른다(주입 철학 일관). 틱 전에 오늘 매수
+  사용액을 DB에서 읽어 넘기고, 틱 후에 기록 — **일일 매수 한도가 틱 경계 너머로 강제**된다(이전엔 틱 내부만).
+- 마이그레이션: 현재 시작 시 `create_all`(초기 스키마·단일 서비스). 스키마 진화 시 **Alembic** 도입.
+- 접속: 로컬/테스트 `sqlite+aiosqlite`, 운영 `postgresql+asyncpg`(Cloud Run → Cloud SQL은
+  **Cloud SQL Connector** 또는 유닉스 소켓, 접속정보는 **Secret Manager**).
+- `accounts`/`universe_symbols`/`positions`(보유 스냅샷·리컨실용)는 리컨실 단계에서 추가 예정.
 
 ---
 

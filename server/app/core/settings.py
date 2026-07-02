@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     research_top_n: int = 5
 
+    # DB 영속화 (미설정 시 인메모리 — 재시작 시 원장/엔진 상태 소실. 운영은 필수)
+    # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)
+    database_url: str | None = None
+
     # 워치리스트: 쉼표 구분 종목코드. 명시 의도 → 심볼 소스보다 우선·항상 평가. 보유 종목도 항상 평가됨.
     watchlist: str = ""
 
