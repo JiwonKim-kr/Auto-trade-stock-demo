@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.llm import Action, Decision
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.screener import ScreenConfig
@@ -130,6 +131,27 @@ async def test_tick_circuit_breaker_halts_new_buys():
     assert buys and all(
         o.status is OrderStatus.REJECTED and "CIRCUIT_BREAKER" in o.reason for o in buys
     )
+
+
+async def test_tick_cost_gate_blocks_low_edge_buy():
+    # 완만한 상승(저변동성) → 기대이동폭 < 비용 문턱 → 매수 차단
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=FakeToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, entry_gate=EntryGate())
+    assert "000660" in res.cost_gated
+    assert not [o for o in res.orders if o.request.side is Side.BUY]   # 매수 주문 없음
+
+
+async def test_tick_cost_gate_allows_when_disabled():
+    # cost_multiple=0 → 문턱 0 → 게이트 통과 → 매수 주문 생성(게이트 배선 반대 방향 검증)
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    gate = EntryGate(CostConfig(), EntryGateConfig(cost_multiple=Decimal("0")))
+    res = await run_tick(toss=FakeToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT, entry_gate=gate)
+    assert res.cost_gated == []
+    assert [o for o in res.orders if o.request.side is Side.BUY]       # 매수 주문 존재
 
 
 async def test_tick_no_symbols_noop():

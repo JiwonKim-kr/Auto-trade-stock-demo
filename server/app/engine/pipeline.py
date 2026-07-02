@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
 from app.engine.allocator import allocate
+from app.engine.costs import EntryGate
 from app.engine.llm import (
     Action,
     CandidateContext,
@@ -43,6 +44,7 @@ class TickResult:
     note: str = ""
     circuit_breaker: bool = False
     circuit_breaker_reason: str = ""
+    cost_gated: list[str] = field(default_factory=list)   # 비용 게이트로 차단된 매수 후보
 
 
 class DeterministicJudge:
@@ -68,16 +70,18 @@ async def run_tick(
     research: ResearchProvider | None = None,
     screen_config: ScreenConfig | None = None,
     research_top_n: int | None = 5,
+    entry_gate: EntryGate | None = None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
 
     cb = order_service.circuit_breaker
 
-    def _result(candidates, decisions, orders, universe, note="") -> TickResult:
+    def _result(candidates, decisions, orders, universe, note="", cost_gated=None) -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
                           candidates=candidates, decisions=decisions, orders=orders, note=note,
-                          circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason)
+                          circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason,
+                          cost_gated=cost_gated or [])
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union
     holdings = await toss.get_holdings()
@@ -139,8 +143,14 @@ async def run_tick(
     base_ctx = context_from_holdings(holdings, now, kill_switch=ks)
     daily_used = Decimal(0)
     orders: list[OrderResult] = []
+    cost_gated: list[str] = []
     for d in decisions:
         ctx = ctx_by[d.symbol]
+        # 비용 인지 진입 게이트(선택): 기대이동폭이 라운드트립 비용 문턱을 못 넘는 매수는 차단(매도/보유 무관)
+        if entry_gate is not None and d.action is Action.BUY:
+            if not entry_gate.evaluate(d.confidence, ctx.recent_closes).passed:
+                cost_gated.append(d.symbol)
+                continue
         req = allocate(d, ctx, order_service.config)
         if req is None:
             continue
@@ -153,4 +163,4 @@ async def run_tick(
         if req.side is Side.BUY and res.status in (OrderStatus.DRY_RUN, OrderStatus.SUBMITTED):
             daily_used += req.estimated_notional() or Decimal(0)   # 틱 내 일일한도 누적
 
-    return _result(len(candidates), decisions, orders, sorted(eligible))
+    return _result(len(candidates), decisions, orders, sorted(eligible), cost_gated=cost_gated)

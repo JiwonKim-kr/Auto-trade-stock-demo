@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key
+from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.llm import ClaudeJudge
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.research import WebSearchResearch
@@ -122,9 +123,21 @@ async def tick(
         judge, research = DeterministicJudge(), None
         engine = "ANTHROPIC_API_KEY 미설정 → 결정적 폴백(주문 데모용)"
 
+    entry_gate = EntryGate(
+        CostConfig(
+            commission_rate=settings.cost_commission_rate,
+            slippage_rate=settings.cost_slippage_rate,
+            sell_tax_rate=settings.cost_sell_tax_rate,
+        ),
+        EntryGateConfig(
+            cost_multiple=settings.entry_cost_multiple,
+            move_multiple=settings.entry_move_multiple,
+        ),
+    )
+
     result = await run_tick(
         toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
-        now=datetime.now(KST), research_top_n=settings.research_top_n,
+        now=datetime.now(KST), research_top_n=settings.research_top_n, entry_gate=entry_gate,
     )
     return {
         "mode": result.mode,
@@ -134,6 +147,7 @@ async def tick(
         "engine": engine,
         "universe_symbols": result.universe_symbols,
         "candidates": result.candidates,
+        "cost_gated": result.cost_gated,
         "decisions": [d.model_dump() for d in result.decisions],
         "orders": result.orders,
         "note": result.note,

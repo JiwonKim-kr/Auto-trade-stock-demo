@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     max_drawdown_limit: Decimal = Decimal("0.15")       # 고점대비 낙폭 한도(양수 크기)
     drawdown_rearm: Decimal = Decimal("0.08")           # 낙폭 해제 기준(히스테리시스)
 
+    # 비용 인지 진입 게이트: 기대이동폭 ≥ 라운드트립 비용 × 배수일 때만 매수(비용에 갉아먹히는 잔매매 차단)
+    cost_commission_rate: Decimal = Decimal("0.00015")  # 편도 수수료
+    cost_slippage_rate: Decimal = Decimal("0.0015")     # 편도 슬리피지(유동성별 보정 대상)
+    cost_sell_tax_rate: Decimal = Decimal("0.0015")     # 증권거래세(매도). 2025~ 0.15%. ⚠️실거래 시 재확인
+    entry_cost_multiple: Decimal = Decimal("3.5")       # 진입 문턱 = 라운드트립 × 이 값(0이면 게이트 사실상 해제)
+    entry_move_multiple: Decimal = Decimal("3.0")       # 기대이동폭 = confidence × σ × 이 값
+
 
 @lru_cache
 def get_settings() -> Settings:
