@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models import (
@@ -25,10 +25,14 @@ from app.db.models import (
     DecisionRow,
     EngineStateRow,
     OrderRow,
+    PaperEquityRow,
+    PaperPositionRow,
+    PaperStateRow,
     PositionRow,
     PositionSnapshotRow,
     TickRow,
 )
+from app.engine.paper import PaperPortfolio, PaperPosition
 from app.orders.guardrails import KST
 from app.orders.models import OrderResult, OrderStatus
 from app.orders.reconcile import PositionSnapshot
@@ -161,6 +165,61 @@ class Repository:
             sign = Decimal(1) if side == "BUY" else Decimal(-1)
             delta[symbol] = delta.get(symbol, Decimal(0)) + sign * Decimal(qty)
         return delta
+
+    # ── 페이퍼 장부 (DRY_RUN 모의 체결 상태 + 자산곡선) ─────────────────────────
+    async def load_paper(self) -> PaperPortfolio | None:
+        """페이퍼 장부 복원. 없으면 None(첫 실행 — 라우트가 seed 로 초기화)."""
+        async with self._sm() as s:
+            state = await s.get(PaperStateRow, 1)
+            if state is None:
+                return None
+            rows = (await s.execute(select(PaperPositionRow))).scalars().all()
+        return PaperPortfolio(
+            cash=Decimal(state.cash),
+            positions={r.symbol: PaperPosition(quantity=Decimal(r.quantity),
+                                               avg_cost=Decimal(r.avg_cost)) for r in rows},
+            realized_cum=Decimal(state.realized_cum),
+            trade_count=state.trade_count,
+        )
+
+    async def save_paper(self, paper: PaperPortfolio, seed: Decimal | None = None) -> None:
+        """장부 저장 — 상태 단일행 upsert + 포지션 전체 교체(포지션 수가 작아 단순함 우선)."""
+        async with self._sm() as s, s.begin():
+            state = await s.get(PaperStateRow, 1)
+            if state is None:
+                state = PaperStateRow(id=1, seed=str(seed if seed is not None else paper.cash))
+                s.add(state)
+            state.cash = str(paper.cash)
+            state.realized_cum = str(paper.realized_cum)
+            state.trade_count = paper.trade_count
+            state.updated_at = datetime.now(timezone.utc)
+            await s.execute(delete(PaperPositionRow))
+            for symbol, pos in paper.positions.items():
+                s.add(PaperPositionRow(symbol=symbol, quantity=str(pos.quantity),
+                                       avg_cost=str(pos.avg_cost)))
+
+    async def append_paper_equity(
+        self, ts: datetime, equity: Decimal, cash: Decimal, positions_value: Decimal,
+        realized_cum: Decimal, benchmark_price: Decimal | None,
+    ) -> None:
+        async with self._sm() as s, s.begin():
+            s.add(PaperEquityRow(
+                ts=ts.astimezone(timezone.utc), trade_date=trade_date_kst(ts),
+                equity=str(equity), cash=str(cash), positions_value=str(positions_value),
+                realized_cum=str(realized_cum),
+                benchmark_price=str(benchmark_price) if benchmark_price is not None else None))
+
+    async def load_daily_equity(self) -> list[tuple[str, Decimal, Decimal | None]]:
+        """일별 자산곡선 [(날짜, 그날 마지막 equity, 그날 마지막 벤치마크가)] — 평가 입력."""
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(PaperEquityRow).order_by(PaperEquityRow.id))).scalars().all()
+        by_day: dict[str, tuple[Decimal, Decimal | None]] = {}
+        for r in rows:                                        # id 오름차순 → 마지막 값이 남는다
+            by_day[r.trade_date] = (
+                Decimal(r.equity),
+                Decimal(r.benchmark_price) if r.benchmark_price else None)
+        return [(d, e, b) for d, (e, b) in sorted(by_day.items())]
 
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────
     async def load_engine_state(self) -> tuple[bool, dict] | None:

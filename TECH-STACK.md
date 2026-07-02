@@ -117,6 +117,9 @@ REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 
 | `orders` | **client_order_id(UNIQUE)**, symbol, side, qty/price/amount(정확 문자열), mode, status, **trade_date(KST)** | 멱등 2차 방어 · REJECTED 포함 전수 · 일일 집계 |
 | `audit_log` | ts, actor, action, payload(json text) | 컨트롤플레인 감사(킬스위치 토글 등) |
 | `engine_state` | 단일행(id=1): kill_switch, breaker_json | 킬스위치·서킷브레이커 **재시작 생존**(Cloud Run min=0) |
+| `position_snapshots`+`positions` | ts, symbol, quantity… | 리컨실 기준선(0종목 청산도 성립) |
+| `paper_state`+`paper_positions` | cash, realized_cum, trade_count / symbol, qty, avg_cost | 페이퍼 장부(모의 체결 상태) |
+| `paper_equity` | ts, trade_date, equity, benchmark_price… | 페이퍼 자산곡선(평가 입력, 벤치마크 동시 기록) |
 
 - **DB I/O 는 경계(라우트/lifespan)에만** — `run_tick`은 DB를 모른다(주입 철학 일관). 틱 전에 오늘 매수
   사용액을 DB에서 읽어 넘기고, 틱 후에 기록 — **일일 매수 한도가 틱 경계 너머로 강제**된다(이전엔 틱 내부만).
@@ -201,7 +204,13 @@ REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 
   기준선은 틱이 전진시켜 반복 경보를 흡수, 수동 점검은 `GET /api/reconcile`(기준선 미이동).
   ⚠️ 전송 기준 근사: 미체결/부분체결도 불일치로 뜬다(보수적 오탐) — 체결 조회 연동 시 정밀화. (TODO)
 - **감사**: 모든 결정·주문·모드전환·킬스위치 조작을 `audit_log`에 전수 기록.
-- **LIVE 첫 전환**: **소액 1주**부터 → 리컨실/감사로 검증하며 점진 확대.
+- **페이퍼 P&L + 평가(구현됨 — LIVE 전환 게이트)**: DRY_RUN 의도 주문을 모의 체결(지정가+슬리피지
+  불리 방향+수수료/매도세 — **넷 원칙**)해 **페이퍼 장부가 파이프라인을 구동**(LLM 이 페이퍼 보유를
+  매도 평가·사이징은 페이퍼 현금 — 자기일관 루프). 매 틱 자산곡선 기록(벤치마크 동시), `GET
+  /api/evaluation` 이 Sharpe(연환산)+SE·MDD·벤치마크 대비·누적수익과 **표본 게이트(완결 트레이드
+  N<100 → 판단 보류)** 를 판정. ⚠️ 한계: 즉시 전량 체결 가정 · SE는 iid 가정(Lo 보정 TODO) ·
+  벤치마크 대비는 베타 미조정 · Deflated Sharpe(다중검정) TODO.
+- **LIVE 첫 전환**: **소액 1주**부터 → 리컨실/감사 + 페이퍼 평가 게이트 통과 후 점진 확대.
 
 ---
 

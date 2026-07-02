@@ -76,6 +76,7 @@ async def run_tick(
     daily_buy_used_krw: Decimal = Decimal(0),
     regime_config: RegimeConfig | None = None,
     holdings=None,
+    cash_buying_power_krw: Decimal | None = None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
@@ -121,11 +122,14 @@ async def run_tick(
         elif result.passed:
             buy_results.append(result)
 
-    # 5) 매수여력
-    try:
-        cash = (await toss.get_buying_power("KRW")).cash_buying_power
-    except Exception:
-        cash = None
+    # 5) 매수여력 — 호출자가 주입 가능(페이퍼 모드: 페이퍼 현금으로 자기일관 사이징)
+    if cash_buying_power_krw is not None:
+        cash = cash_buying_power_krw
+    else:
+        try:
+            cash = (await toss.get_buying_power("KRW")).cash_buying_power
+        except Exception:
+            cash = None
 
     # 5b) 서킷브레이커 갱신(틱당 1회). 자기자본=현금+보유 평가액(KRW), 일일손익률=holdings.
     #     발동 시 신규 매수만 차단(매도=청산은 허용). 상태 주입은 order_service.submit 이 처리.

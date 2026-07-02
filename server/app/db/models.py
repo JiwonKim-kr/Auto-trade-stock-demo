@@ -112,6 +112,46 @@ class PositionRow(Base):
     currency: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class PaperStateRow(Base):
+    """페이퍼 장부 헤더 단일행(id=1) — 현금·누적 실현손익·완결 왕복 수."""
+
+    __tablename__ = "paper_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)   # 항상 1
+    cash: Mapped[str] = mapped_column(Text)             # 정확 10진 문자열
+    realized_cum: Mapped[str] = mapped_column(Text, default="0")
+    trade_count: Mapped[int] = mapped_column(default=0)
+    seed: Mapped[str] = mapped_column(Text)             # 초기 자본(감사·수익률 기준)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PaperPositionRow(Base):
+    """페이퍼 포지션 현재 상태(스냅샷 아님 — save 시 전체 교체)."""
+
+    __tablename__ = "paper_positions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(Text, unique=True)
+    quantity: Mapped[str] = mapped_column(Text)
+    avg_cost: Mapped[str] = mapped_column(Text)
+
+
+class PaperEquityRow(Base):
+    """페이퍼 자산곡선 1점(틱마다) — 평가 모듈 입력. benchmark 는 같은 시점 시장 프록시가."""
+
+    __tablename__ = "paper_equity"
+    __table_args__ = (Index("ix_paper_equity_trade_date", "trade_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    trade_date: Mapped[str] = mapped_column(Text)       # KST YYYY-MM-DD
+    equity: Mapped[str] = mapped_column(Text)
+    cash: Mapped[str] = mapped_column(Text)
+    positions_value: Mapped[str] = mapped_column(Text)
+    realized_cum: Mapped[str] = mapped_column(Text)
+    benchmark_price: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class EngineStateRow(Base):
     """엔진 상태 단일행(id=1) — 킬스위치·서킷브레이커가 재시작에도 생존."""
 

@@ -18,6 +18,7 @@ from app.db.models import AuditRow, DecisionRow, OrderRow, TickRow
 from app.db.repo import Repository, trade_date_kst
 from app.db.session import init_db, make_engine, make_sessionmaker
 from app.engine.llm import Action, Decision
+from app.engine.paper import PaperPortfolio, PaperPosition
 from app.engine.pipeline import TickResult
 from app.main import create_app
 from app.orders.guardrails import KST
@@ -151,6 +152,35 @@ async def test_submitted_qty_since_window_and_sign(tmp_path):
     assert delta == {"005930": Decimal("3")}                     # +5 −2, DRY_RUN·창밖 제외
 
 
+# ── 페이퍼 장부 영속화 ─────────────────────────────────────────────────────────
+async def test_paper_roundtrip(tmp_path):
+    repo = await make_repo(tmp_path)
+    assert await repo.load_paper() is None                        # 첫 실행
+    p = PaperPortfolio(cash=Decimal("900000"),
+                       positions={"005930": PaperPosition(Decimal("2"), Decimal("50000"))},
+                       realized_cum=Decimal("1234"), trade_count=3)
+    await repo.save_paper(p, seed=Decimal("1000000"))
+    loaded = await repo.load_paper()
+    assert loaded.cash == Decimal("900000") and loaded.trade_count == 3
+    assert loaded.positions["005930"].avg_cost == Decimal("50000")
+    p.positions.clear()                                           # 전량 청산 후 저장 → 교체 반영
+    await repo.save_paper(p)
+    assert (await repo.load_paper()).positions == {}
+
+
+async def test_paper_equity_daily_collapse(tmp_path):
+    repo = await make_repo(tmp_path)
+    d1a = datetime(2026, 7, 1, 10, 0, tzinfo=KST)
+    d1b = datetime(2026, 7, 1, 15, 0, tzinfo=KST)                 # 같은 날 두 점 → 마지막만
+    d2 = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
+    for ts, eq, bench in ((d1a, "100", "200"), (d1b, "110", "202"), (d2, "120", None)):
+        await repo.append_paper_equity(ts, Decimal(eq), Decimal(eq), Decimal(0),
+                                       Decimal(0), Decimal(bench) if bench else None)
+    rows = await repo.load_daily_equity()
+    assert rows == [("2026-07-01", Decimal("110"), Decimal("202")),
+                    ("2026-07-02", Decimal("120"), None)]
+
+
 # ── 라우트 통합 (ASGI + lifespan 수동 구동) ───────────────────────────────────
 class FakeToss:
     async def get_holdings(self):
@@ -181,7 +211,11 @@ class FakeToss:
 
 
 async def test_tick_route_records_and_saves_state(tmp_path):
+    # 페이퍼 모드(기본 ON): 페이퍼 보유(005930)가 파이프라인의 '보유'가 된다 — 자기일관 루프
     repo = await make_repo(tmp_path)
+    await repo.save_paper(PaperPortfolio(
+        cash=Decimal("1000000"),
+        positions={"005930": PaperPosition(Decimal("2"), Decimal("60000"))}))
     app = create_app()
     async with app.router.lifespan_context(app):
         app.state.toss_client = FakeToss()
@@ -192,11 +226,55 @@ async def test_tick_route_records_and_saves_state(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["tick_id"] == 1                               # 기록됨
+    assert body["candidates"] == 1                            # 페이퍼 보유 005930 평가(실보유 아님)
     async with repo._sm() as s:
         assert (await s.get(TickRow, 1)) is not None
         n_dec = len((await s.execute(select(DecisionRow))).scalars().all())
     assert n_dec == body["candidates"] > 0                    # 결정 전수 로깅
     assert await repo.load_engine_state() is not None         # 엔진 상태 저장됨
+    # 페이퍼: 자산곡선 1점 기록 + 응답 노출(현금 + 2주 × 마킹가)
+    paper = body["paper"]
+    assert paper is not None and Decimal(paper["equity"]) > Decimal(paper["cash"])
+    assert len(await repo.load_daily_equity()) == 1
+
+
+async def test_tick_route_paper_initializes_from_seed(tmp_path):
+    repo = await make_repo(tmp_path)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/internal/tick", headers=KEY)
+    paper = r.json()["paper"]
+    assert Decimal(paper["equity"]) == Decimal("10000000")    # seed 로 초기화, 포지션 없음
+    assert (await repo.load_paper()).cash == Decimal("10000000")
+
+
+async def test_evaluation_route(tmp_path):
+    repo = await make_repo(tmp_path)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.repo = repo
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r0 = await c.get("/api/evaluation", headers=KEY)   # 데이터 없음
+            for i, eq in enumerate(("10000000", "10100000", "10050000")):
+                await repo.append_paper_equity(
+                    datetime(2026, 7, 1 + i, 15, 0, tzinfo=KST), Decimal(eq), Decimal(eq),
+                    Decimal(0), Decimal(0), None)
+            r1 = await c.get("/api/evaluation", headers=KEY)
+    assert "평가 불가" in r0.json()["verdict"]
+    body = r1.json()
+    assert body["n_days"] == 2 and "판단 보류" in body["verdict"]   # N<100 표본 게이트
+    assert body["cumulative_return"] is not None
+
+
+async def test_evaluation_route_disabled_without_repo():
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/evaluation", headers=KEY)
+    assert r.json()["status"] == "DISABLED"
 
 
 async def test_kill_switch_route_persists_and_audits(tmp_path):

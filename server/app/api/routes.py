@@ -8,6 +8,7 @@
             POST /api/kill-switch             킬스위치 토글
             GET  /api/orders                  주문 원장(의도/전송 결과)
             GET  /api/reconcile               리컨실 수동 점검(기준선 미이동 — DB 필요)
+            GET  /api/evaluation              페이퍼 성과 평가(Sharpe/MDD/벤치마크·표본 게이트 — DB 필요)
             POST /internal/tick               거래 틱(전 파이프라인, DRY_RUN). 운영은 OIDC 권장(TODO)
 """
 
@@ -22,13 +23,15 @@ from pydantic import BaseModel
 from app.api.deps import get_order_service, get_toss_client, require_api_key
 from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
+from app.engine.evaluation import evaluate
 from app.engine.llm import ClaudeJudge
+from app.engine.paper import PaperPortfolio
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.regime import RegimeConfig
 from app.engine.research import WebSearchResearch
 from app.engine.symbols import FileSymbolSource, resolve_symbols
 from app.orders.guardrails import KST
-from app.orders.models import TradingMode
+from app.orders.models import OrderStatus, TradingMode
 from app.orders.reconcile import reconcile, snapshot_from_holdings
 from app.orders.service import OrderService
 from app.toss.client import TossClient
@@ -159,6 +162,19 @@ async def reconcile_check(
                                         advance_baseline=False)
 
 
+@api.get("/evaluation")
+async def evaluation_check(request: Request) -> dict:
+    """페이퍼 자산곡선 → Sharpe/MDD/벤치마크 대비 + 표본 게이트(N<100 판단 보류)."""
+    repo = request.app.state.repo
+    if repo is None:
+        return {"status": "DISABLED", "reason": "DATABASE_URL 미설정 — 평가는 페이퍼 장부(DB) 필요"}
+    rows = await repo.load_daily_equity()
+    paper = await repo.load_paper()
+    report = evaluate([(d, e) for d, e, _ in rows], [(d, b) for d, _, b in rows],
+                      n_trades=paper.trade_count if paper else 0)
+    return report.as_dict()
+
+
 @router.post("/internal/tick", dependencies=[Depends(require_api_key)])
 async def tick(
     request: Request,
@@ -220,16 +236,59 @@ async def tick(
         reconcile_report = await _reconcile_and_enforce(repo, svc, holdings, now,
                                                         advance_baseline=True)
 
+    # 페이퍼 모드(DRY_RUN + DB + seed>0): 페이퍼 장부가 파이프라인을 구동한다 — LLM 이 페이퍼
+    # 보유를 매도 평가하고 사이징이 페이퍼 현금을 쓰는 자기일관 루프(전략 P&L 측정 목적).
+    # 리컨실은 위에서 실계좌 기준으로 이미 수행(분리된 관심사).
+    paper = None
+    marks: dict[str, Decimal] = {}
+    bench_price = None
+    tick_holdings, tick_cash = holdings, None
+    if repo is not None and svc.mode is TradingMode.DRY_RUN and settings.paper_seed_krw > 0:
+        paper = await repo.load_paper()
+        if paper is None:
+            paper = PaperPortfolio(cash=settings.paper_seed_krw)
+            await repo.save_paper(paper, seed=settings.paper_seed_krw)
+            await repo.audit("system", "paper_init", {"seed": str(settings.paper_seed_krw)})
+        mark_symbols = sorted(
+            set(paper.positions) | ({settings.regime_symbol} if settings.regime_symbol else set()))
+        if mark_symbols:
+            try:  # 배치 1콜: 페이퍼 포지션 마킹 + 벤치마크(시장 프록시). 실패 시 취득가 폴백
+                marks = {p.symbol: p.last_price for p in await toss.get_prices(mark_symbols)}
+            except Exception:
+                marks = {}
+            bench_price = marks.get(settings.regime_symbol) if settings.regime_symbol else None
+        tick_holdings, tick_cash = paper.to_synthetic_holdings(marks), paper.cash
+
     result = await run_tick(
         toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
         now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
-        daily_buy_used_krw=daily_used, regime_config=regime_config, holdings=holdings,
+        daily_buy_used_krw=daily_used, regime_config=regime_config, holdings=tick_holdings,
+        cash_buying_power_krw=tick_cash,
     )
 
     tick_id = None
+    paper_summary = None
     if repo is not None:  # 틱/결정/주문 전수 기록 + 엔진 상태(서킷브레이커) 저장
         tick_id = await repo.record_tick(result, started_at=now)
         await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
+        if paper is not None:  # 의도 주문 모의 체결 → 장부 저장 → 자산곡선 1점 기록
+            fills = []
+            for o in result.orders:
+                if o.status is not OrderStatus.DRY_RUN:
+                    continue
+                f = paper.apply_fill(o.request, entry_gate.cost)
+                if f is None:
+                    continue
+                fills.append(f.as_dict())
+                if not f.skipped and o.request.price is not None:
+                    marks.setdefault(o.request.symbol, o.request.price)   # 신규 매수분 마킹가
+            await repo.save_paper(paper)
+            equity, positions_value = paper.mark_equity(marks)
+            await repo.append_paper_equity(now, equity, paper.cash, positions_value,
+                                           paper.realized_cum, bench_price)
+            paper_summary = {"equity": str(equity), "cash": str(paper.cash),
+                             "realized_cum": str(paper.realized_cum),
+                             "trade_count": paper.trade_count, "fills": fills}
 
     return {
         "tick_id": tick_id,
@@ -243,6 +302,7 @@ async def tick(
         "cost_gated": result.cost_gated,
         "regime": result.regime,
         "reconcile": reconcile_report,
+        "paper": paper_summary,
         "decisions": [d.model_dump() for d in result.decisions],
         "orders": result.orders,
         "note": result.note,

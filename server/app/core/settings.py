@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)
     database_url: str | None = None
 
+    # 페이퍼 P&L: DRY_RUN 의도 주문을 모의 체결해 전략 손익 추적(DB 필요). 0 이면 비활성
+    # (비활성 시 틱은 실계좌 보유/현금으로 관찰만 — 기존 동작).
+    paper_seed_krw: Decimal = Decimal("10000000")
+
     # 워치리스트: 쉼표 구분 종목코드. 명시 의도 → 심볼 소스보다 우선·항상 평가. 보유 종목도 항상 평가됨.
     watchlist: str = ""
 
