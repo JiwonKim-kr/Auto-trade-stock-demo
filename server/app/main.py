@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.api.routes import router
+from app.api.tick import tick_loop
 from app.core.config import load_trading_mode
 from app.core.settings import get_settings
 from app.db.repo import Repository
@@ -87,9 +89,17 @@ async def lifespan(app: FastAPI):
     if settings.api_key == "dev-local-key":
         logger.warning("API_KEY 가 기본값입니다 — 운영 전 반드시 변경(Secret Manager)")
 
+    # 틱 직렬화 락(+내장 루프). 운영(Cloud Scheduler)은 interval=0 — 루프 없이 락만 사용
+    app.state.tick_lock = asyncio.Lock()
+    loop_task = None
+    if settings.tick_interval_sec > 0:
+        loop_task = asyncio.create_task(tick_loop(app))
+
     try:
         yield
     finally:
+        if loop_task is not None:
+            loop_task.cancel()
         if app.state.toss_client is not None:
             await app.state.toss_client.aclose()
         if app.state.db_engine is not None:

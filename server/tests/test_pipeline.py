@@ -220,6 +220,24 @@ async def test_tick_daily_buy_used_carries_across_ticks():
     )
 
 
+async def test_tick_max_buy_candidates_compresses_by_score():
+    # 매수 후보 3 종목 → score 상위 2만 판단(LLM 비용 가드). 보유(005930)는 항상 평가.
+    class MultiToss(FakeToss):
+        async def get_candles(self, symbol, interval="1d"):
+            # 종목별로 기울기 다른 상승 → score 차등(가파를수록 높음)
+            step = {"000660": 10, "035420": 30, "035720": 50}.get(symbol, 5)
+            return _rising_candles(step=step)
+
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=MultiToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660", "035420", "035720"], judge=BuyJudge(),
+                         now=OPEN_KST, screen_config=LENIENT, max_buy_candidates=2)
+    symbols = {d.symbol for d in res.decisions}
+    assert res.candidates == 3                                # 상위 2 매수후보 + 보유 1
+    assert "000660" not in symbols                            # 최저 score 탈락
+    assert {"035420", "035720", "005930"} <= symbols
+
+
 async def test_tick_no_symbols_noop():
     class EmptyToss(FakeToss):
         async def get_holdings(self):

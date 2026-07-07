@@ -107,11 +107,16 @@ async def resolve_symbols(
     *,
     limit: int | None = None,
     include: Iterable[str] = (),
+    offset: int = 0,
 ) -> list[str]:
     """소스 + 우선포함(워치리스트) → 정규화·중복제거 코드 리스트(순서보존).
 
     `include`(워치리스트)는 **항상 우선·전부 유지**, 소스는 `limit` 안에서 채운다(전체 상한 = limit).
     캔들 호출 수를 묶어 레이트리밋을 보호한다(보유 종목은 run_tick 이 별도 union — 매도 평가).
+
+    `offset`: 소스를 wrap-around 회전시켜 읽기 시작할 위치 — **코호트 로테이션**.
+    limit 로 자르면 시드 앞쪽(코드 오름차순)만 반복 평가되는 편향이 생긴다 → 호출자가
+    `틱 수 × limit` 을 넘기면 전 유니버스가 틱마다 다음 코호트로 공평하게 순환한다.
     """
     seen: set[str] = set()
     result: list[str] = []
@@ -120,7 +125,11 @@ async def resolve_symbols(
         if code and code not in seen:
             seen.add(code)
             result.append(code)
-    for entry in await source.symbols():
+    entries = await source.symbols()
+    if offset and entries:
+        k = offset % len(entries)
+        entries = entries[k:] + entries[:k]      # wrap-around 로테이션
+    for entry in entries:
         if limit is not None and len(result) >= limit:
             break
         if entry.code not in seen:

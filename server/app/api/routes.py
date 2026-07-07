@@ -9,33 +9,22 @@
             GET  /api/orders                  주문 원장(의도/전송 결과)
             GET  /api/reconcile               리컨실 수동 점검(기준선 미이동 — DB 필요)
             GET  /api/evaluation              페이퍼 성과 평가(Sharpe/MDD/벤치마크·표본 게이트 — DB 필요)
-            POST /internal/tick               거래 틱(전 파이프라인, DRY_RUN). 운영은 OIDC 권장(TODO)
+            POST /internal/tick               거래 틱(조립은 api/tick.py). 운영은 OIDC 권장(TODO)
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key
-from app.db.repo import trade_date_kst
-from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
+from app.api.tick import execute_tick, reconcile_and_enforce
 from app.engine.evaluation import evaluate
-from app.engine.llm import ClaudeJudge
-from app.engine.paper import PaperPortfolio
-from app.engine.pipeline import DeterministicJudge, run_tick
-from app.engine.regime import RegimeConfig
-from app.engine.research import WebSearchResearch
-from app.engine.symbols import FileSymbolSource, resolve_symbols
 from app.orders.guardrails import KST
-from app.orders.models import OrderStatus, TradingMode
-from app.orders.reconcile import reconcile, snapshot_from_holdings
 from app.orders.service import OrderService
 from app.toss.client import TossClient
-from app.toss.models import Holdings
 
 router = APIRouter()
 
@@ -115,38 +104,6 @@ async def orders(svc: OrderService = Depends(get_order_service)):
     return svc.ledger
 
 
-async def _reconcile_and_enforce(
-    repo, svc: OrderService, holdings: Holdings, now: datetime, *, advance_baseline: bool
-) -> dict:
-    """리컨실 실행 + 집행: 불일치 감사 기록, LIVE 면 킬스위치 자동 발동(거래 중단).
-
-    advance_baseline: 틱은 True(기준선 전진 — 감지된 외부 변화를 흡수해 반복 경보 방지),
-    수동 점검(/api/reconcile)은 False(읽기 전용). 기준선 없으면 어느 쪽이든 생성.
-    """
-    items = snapshot_from_holdings(holdings)
-    current = {i.symbol: i.quantity for i in items}
-    prev = await repo.load_latest_positions()
-
-    if prev is None:
-        report = reconcile(None, current)
-        await repo.save_positions_snapshot(now, items)          # 기준선 생성
-        return report.as_dict()
-
-    prev_ts, prev_map = prev
-    delta = await repo.submitted_qty_since(prev_ts)
-    report = reconcile(prev_map, current, delta)
-    if not report.ok:
-        await repo.audit("system", "reconcile_mismatch", report.as_dict())
-        if svc.mode is TradingMode.LIVE and not svc.kill_switch:
-            svc.engage_kill_switch()                             # 실자금 위 불일치 → 거래 중단
-            await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
-            await repo.audit("system", "kill_switch",
-                             {"engaged": True, "cause": "reconcile_mismatch"})
-    if advance_baseline:
-        await repo.save_positions_snapshot(now, items)
-    return report.as_dict()
-
-
 @api.get("/reconcile")
 async def reconcile_check(
     request: Request,
@@ -157,9 +114,9 @@ async def reconcile_check(
     repo = request.app.state.repo
     if repo is None:
         return {"status": "DISABLED", "reason": "DATABASE_URL 미설정 — 리컨실은 DB 필요"}
-    holdings = await toss.get_holdings()
-    return await _reconcile_and_enforce(repo, svc, holdings, datetime.now(KST),
-                                        advance_baseline=False)
+    holdings_ = await toss.get_holdings()
+    return await reconcile_and_enforce(repo, svc, holdings_, datetime.now(KST),
+                                       advance_baseline=False)
 
 
 @api.get("/evaluation")
@@ -176,137 +133,9 @@ async def evaluation_check(request: Request) -> dict:
 
 
 @router.post("/internal/tick", dependencies=[Depends(require_api_key)])
-async def tick(
-    request: Request,
-    svc: OrderService = Depends(get_order_service),
-    toss: TossClient = Depends(get_toss_client),
-) -> dict:
-    """거래 틱: 수집→유니버스→스크리너→조사→판단→사이징→DRY_RUN 주문. 운영은 OIDC 권장(TODO)."""
-    settings = request.app.state.settings
-    watch = [s.strip() for s in (settings.watchlist or "").split(",") if s.strip()]
-
-    # 심볼 소스 설정 시: KRX 시드 ∪ 워치리스트(우선) → 후보 상한 적용. 미설정이면 워치리스트만(기존 동작).
-    if settings.symbol_source_path:
-        watch = await resolve_symbols(
-            FileSymbolSource(settings.symbol_source_path),
-            limit=settings.universe_max_symbols,
-            include=watch,
-        )
-
-    if settings.anthropic_api_key:
-        judge, research = ClaudeJudge(), WebSearchResearch()
-        engine = "claude-fable-5 + web_search"
-    else:
-        judge, research = DeterministicJudge(), None
-        engine = "ANTHROPIC_API_KEY 미설정 → 결정적 폴백(주문 데모용)"
-
-    entry_gate = EntryGate(
-        CostConfig(
-            commission_rate=settings.cost_commission_rate,
-            slippage_rate=settings.cost_slippage_rate,
-            sell_tax_rate=settings.cost_sell_tax_rate,
-        ),
-        EntryGateConfig(
-            cost_multiple=settings.entry_cost_multiple,
-            move_multiple=settings.entry_move_multiple,
-        ),
-    )
-
-    # 레짐 필터(REGIME_SYMBOL 빈 값이면 비활성)
-    regime_config = None
-    if settings.regime_symbol:
-        regime_config = RegimeConfig(
-            symbol=settings.regime_symbol,
-            calm_vol=settings.regime_calm_vol,
-            stress_vol=settings.regime_stress_vol,
-            elevated_multiplier=settings.regime_elevated_multiplier,
-            stress_multiplier=settings.regime_stress_multiplier,
-        )
-
-    # 영속화 설정 시: 오늘 매수 사용액을 DB에서 읽어 일일 한도를 틱 경계 너머로 강제하고,
-    # 틱 전에 리컨실(포지션 대조) — LIVE 불일치면 킬스위치가 걸린 채 틱이 돌아 주문이 차단된다.
-    now = datetime.now(KST)
-    repo = request.app.state.repo
-    daily_used = Decimal(0)
-    holdings = None
-    reconcile_report = None
-    if repo is not None:
-        daily_used = await repo.buy_notional_today(trade_date_kst(now))
-        holdings = await toss.get_holdings()
-        reconcile_report = await _reconcile_and_enforce(repo, svc, holdings, now,
-                                                        advance_baseline=True)
-
-    # 페이퍼 모드(DRY_RUN + DB + seed>0): 페이퍼 장부가 파이프라인을 구동한다 — LLM 이 페이퍼
-    # 보유를 매도 평가하고 사이징이 페이퍼 현금을 쓰는 자기일관 루프(전략 P&L 측정 목적).
-    # 리컨실은 위에서 실계좌 기준으로 이미 수행(분리된 관심사).
-    paper = None
-    marks: dict[str, Decimal] = {}
-    bench_price = None
-    tick_holdings, tick_cash = holdings, None
-    if repo is not None and svc.mode is TradingMode.DRY_RUN and settings.paper_seed_krw > 0:
-        paper = await repo.load_paper()
-        if paper is None:
-            paper = PaperPortfolio(cash=settings.paper_seed_krw)
-            await repo.save_paper(paper, seed=settings.paper_seed_krw)
-            await repo.audit("system", "paper_init", {"seed": str(settings.paper_seed_krw)})
-        mark_symbols = sorted(
-            set(paper.positions) | ({settings.regime_symbol} if settings.regime_symbol else set()))
-        if mark_symbols:
-            try:  # 배치 1콜: 페이퍼 포지션 마킹 + 벤치마크(시장 프록시). 실패 시 취득가 폴백
-                marks = {p.symbol: p.last_price for p in await toss.get_prices(mark_symbols)}
-            except Exception:
-                marks = {}
-            bench_price = marks.get(settings.regime_symbol) if settings.regime_symbol else None
-        tick_holdings, tick_cash = paper.to_synthetic_holdings(marks), paper.cash
-
-    result = await run_tick(
-        toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
-        now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
-        daily_buy_used_krw=daily_used, regime_config=regime_config, holdings=tick_holdings,
-        cash_buying_power_krw=tick_cash,
-    )
-
-    tick_id = None
-    paper_summary = None
-    if repo is not None:  # 틱/결정/주문 전수 기록 + 엔진 상태(서킷브레이커) 저장
-        tick_id = await repo.record_tick(result, started_at=now)
-        await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
-        if paper is not None:  # 의도 주문 모의 체결 → 장부 저장 → 자산곡선 1점 기록
-            fills = []
-            for o in result.orders:
-                if o.status is not OrderStatus.DRY_RUN:
-                    continue
-                f = paper.apply_fill(o.request, entry_gate.cost)
-                if f is None:
-                    continue
-                fills.append(f.as_dict())
-                if not f.skipped and o.request.price is not None:
-                    marks.setdefault(o.request.symbol, o.request.price)   # 신규 매수분 마킹가
-            await repo.save_paper(paper)
-            equity, positions_value = paper.mark_equity(marks)
-            await repo.append_paper_equity(now, equity, paper.cash, positions_value,
-                                           paper.realized_cum, bench_price)
-            paper_summary = {"equity": str(equity), "cash": str(paper.cash),
-                             "realized_cum": str(paper.realized_cum),
-                             "trade_count": paper.trade_count, "fills": fills}
-
-    return {
-        "tick_id": tick_id,
-        "mode": result.mode,
-        "kill_switch": result.kill_switch,
-        "circuit_breaker": result.circuit_breaker,
-        "circuit_breaker_reason": result.circuit_breaker_reason,
-        "engine": engine,
-        "universe_symbols": result.universe_symbols,
-        "candidates": result.candidates,
-        "cost_gated": result.cost_gated,
-        "regime": result.regime,
-        "reconcile": reconcile_report,
-        "paper": paper_summary,
-        "decisions": [d.model_dump() for d in result.decisions],
-        "orders": result.orders,
-        "note": result.note,
-    }
+async def tick(request: Request, toss: TossClient = Depends(get_toss_client)) -> dict:
+    """거래 틱 1회(조립·실행은 api/tick.py — 내장 루프와 공유). 운영은 OIDC 권장(TODO)."""
+    return await execute_tick(request.app)
 
 
 router.include_router(api)

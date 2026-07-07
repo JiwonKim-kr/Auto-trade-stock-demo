@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # AI 엔진 (없으면 틱은 결정적 폴백 판단기 사용 — 주문 데모 가능)
     anthropic_api_key: str | None = None
     research_top_n: int = 5
+    # LLM 비용 가드: 틱당 매수 후보 상한(score 상위 N — 보유는 항상 평가) + 일일 판단 수 상한
+    # (상한 도달 시 그날은 결정적 폴백으로 강등 — DB 필요, 근사 카운트)
+    judge_top_n: int = 10
+    daily_llm_decision_cap: int = 400
+
+    # 내장 틱 루프(초). 0=비활성(운영은 Cloud Scheduler 가 /internal/tick 호출).
+    # 로컬 상시 운용: 예 300 → 장중(KST 평일 09:00–15:30)에만 자동 틱.
+    tick_interval_sec: int = 0
 
     # DB 영속화 (미설정 시 인메모리 — 재시작 시 원장/엔진 상태 소실. 운영은 필수)
     # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)

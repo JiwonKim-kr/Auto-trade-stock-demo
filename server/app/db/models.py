@@ -29,6 +29,7 @@ class TickRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    trade_date: Mapped[str] = mapped_column(Text, default="")   # KST YYYY-MM-DD (일일 집계·비용가드)
     mode: Mapped[str] = mapped_column(Text)
     kill_switch: Mapped[bool] = mapped_column(default=False)
     circuit_breaker: Mapped[bool] = mapped_column(default=False)

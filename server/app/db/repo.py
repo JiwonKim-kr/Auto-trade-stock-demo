@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models import (
@@ -61,6 +61,7 @@ class Repository:
         async with self._sm() as s, s.begin():
             tick = TickRow(
                 started_at=started_at,
+                trade_date=trade_date_kst(started_at),
                 mode=result.mode,
                 kill_switch=result.kill_switch,
                 circuit_breaker=result.circuit_breaker,
@@ -105,6 +106,20 @@ class Repository:
             created_at=res.created_at,
             trade_date=trade_date_kst(res.created_at),
         ))
+
+    # ── 카운트 (유니버스 로테이션·LLM 비용가드 입력) ────────────────────────────
+    async def count_ticks(self) -> int:
+        """누적 틱 수 — 유니버스 코호트 로테이션 오프셋(틱수 × limit)의 근거."""
+        async with self._sm() as s:
+            return (await s.scalar(select(func.count(TickRow.id)))) or 0
+
+    async def count_decisions_today(self, trade_date: str) -> int:
+        """오늘 기록된 판단 수 — 일일 LLM 비용 상한 판정(근사: 폴백 판단 포함)."""
+        async with self._sm() as s:
+            return (await s.scalar(
+                select(func.count(DecisionRow.id))
+                .join(TickRow, DecisionRow.tick_id == TickRow.id)
+                .where(TickRow.trade_date == trade_date))) or 0
 
     # ── 일일 매수 사용액 (교차-틱 일일 한도의 근거) ─────────────────────────────
     async def buy_notional_today(self, trade_date: str) -> Decimal:

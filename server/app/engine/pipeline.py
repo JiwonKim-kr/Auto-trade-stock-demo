@@ -77,6 +77,7 @@ async def run_tick(
     regime_config: RegimeConfig | None = None,
     holdings=None,
     cash_buying_power_krw: Decimal | None = None,
+    max_buy_candidates: int | None = None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
@@ -121,6 +122,10 @@ async def run_tick(
             holding_indicators[sym] = result.indicators
         elif result.passed:
             buy_results.append(result)
+
+    # 4b) 매수 후보 압축(LLM 비용 가드) — score 상위 N 만 판단에 올린다. 보유는 항상 평가(매도 안전).
+    if max_buy_candidates is not None and len(buy_results) > max_buy_candidates:
+        buy_results = sorted(buy_results, key=lambda r: r.score, reverse=True)[:max_buy_candidates]
 
     # 5) 매수여력 — 호출자가 주입 가능(페이퍼 모드: 페이퍼 현금으로 자기일관 사이징)
     if cash_buying_power_krw is not None:

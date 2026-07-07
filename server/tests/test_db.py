@@ -152,6 +152,19 @@ async def test_submitted_qty_since_window_and_sign(tmp_path):
     assert delta == {"005930": Decimal("3")}                     # +5 −2, DRY_RUN·창밖 제외
 
 
+# ── 카운트 (로테이션·비용가드 입력) ────────────────────────────────────────────
+async def test_count_ticks_and_decisions_today(tmp_path):
+    repo = await make_repo(tmp_path)
+    assert await repo.count_ticks() == 0
+    decisions = [Decision(action=Action.HOLD, symbol="005930", confidence=0.5, rationale="t"),
+                 Decision(action=Action.HOLD, symbol="000660", confidence=0.5, rationale="t")]
+    await repo.record_tick(tick_result([], decisions), NOW_KST)
+    await repo.record_tick(tick_result([]), NOW_KST)
+    assert await repo.count_ticks() == 2
+    assert await repo.count_decisions_today(trade_date_kst(NOW_KST)) == 2
+    assert await repo.count_decisions_today("2026-07-01") == 0     # 다른 날짜
+
+
 # ── 페이퍼 장부 영속화 ─────────────────────────────────────────────────────────
 async def test_paper_roundtrip(tmp_path):
     repo = await make_repo(tmp_path)
@@ -275,6 +288,63 @@ async def test_evaluation_route_disabled_without_repo():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.get("/api/evaluation", headers=KEY)
     assert r.json()["status"] == "DISABLED"
+
+
+# ── M1: 틱 직렬화 락 · LLM 비용가드 · 유니버스 로테이션 ────────────────────────
+async def test_tick_lock_skips_concurrent():
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        await app.state.tick_lock.acquire()                    # 진행 중인 틱 시뮬레이션
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                r = await c.post("/internal/tick", headers=KEY)
+        finally:
+            app.state.tick_lock.release()
+    assert "skipped" in r.json()                               # 중복 호출 → 스킵(직렬화)
+
+
+async def test_tick_llm_cap_downgrades_to_fallback(tmp_path):
+    from app.core.settings import Settings
+    repo = await make_repo(tmp_path)
+    today = datetime.now(KST)
+    seed_decisions = [Decision(action=Action.HOLD, symbol="005930", confidence=0.5, rationale="t")]
+    await repo.record_tick(tick_result([], seed_decisions), today)   # 오늘 이미 판단 1건
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        app.state.settings = Settings(anthropic_api_key="sk-test", daily_llm_decision_cap=1)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/internal/tick", headers=KEY)
+    assert "상한" in r.json()["engine"]                        # ClaudeJudge 미사용(실 콜 0)
+
+
+async def test_tick_universe_rotates_with_tick_count(tmp_path):
+    from app.core.settings import Settings
+    repo = await make_repo(tmp_path)
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps(["111111", "222222", "333333", "444444"]), encoding="utf-8")
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        app.state.settings = Settings(symbol_source_path=str(seed), universe_max_symbols=2,
+                                      paper_seed_krw=Decimal("0"))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r1 = await c.post("/internal/tick", headers=KEY)   # 틱수 0 → 코호트 [111111,222222]
+            r2 = await c.post("/internal/tick", headers=KEY)   # 틱수 1 → 코호트 [333333,444444]
+    u1, u2 = set(r1.json()["universe_symbols"]), set(r2.json()["universe_symbols"])
+    assert {"111111", "222222"} <= u1 and not {"333333", "444444"} & u1
+    assert {"333333", "444444"} <= u2 and not {"111111", "222222"} & u2
+
+
+def test_in_market_hours():
+    from app.api.tick import in_market_hours
+    svc = OrderService()
+    assert in_market_hours(datetime(2026, 7, 2, 10, 0, tzinfo=KST), svc) is True    # 목 10:00
+    assert in_market_hours(datetime(2026, 7, 4, 10, 0, tzinfo=KST), svc) is False   # 토요일
+    assert in_market_hours(datetime(2026, 7, 2, 16, 0, tzinfo=KST), svc) is False   # 장후
 
 
 async def test_kill_switch_route_persists_and_audits(tmp_path):

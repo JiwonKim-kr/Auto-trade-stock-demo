@@ -71,9 +71,11 @@
 | 테스트 | **pytest + pytest-asyncio + respx**(httpx 목) | 토스 응답 픽스처로 매핑 회귀 방지 |
 | 컨테이너 | **Docker** (python:3.12-slim 베이스) | Artifact Registry로 푸시 |
 
-**동시성/틱 모델**: 거래 틱은 Cloud Scheduler가 `POST /internal/tick`을 호출 → 요청 내에서
-`수집→스크리너→LLM→가드레일→주문`을 동기 수행. **중복 틱 방지**를 위해 PG **advisory lock**(또는
-`tick_runs` 상태행)으로 직렬화. 틱은 짧게(수 초~수십 초) 끝나도록 후보 수를 제한.
+**동시성/틱 모델**: 거래 틱은 Cloud Scheduler가 `POST /internal/tick`을 호출(운영) 또는 **내장
+틱 루프**(`TICK_INTERVAL_SEC>0`, 로컬 상시 운용 — KST 장중에만 실행) → `api/tick.py::execute_tick`
+이 전 조립을 수행. **중복 틱은 in-process asyncio 락으로 직렬화**(진행 중이면 스킵 응답) — Cloud Run
+다중 인스턴스 대비 PG **advisory lock** 승급은 배포 단계에서. 틱은 짧게 끝나도록 후보 수를 제한
+(`UNIVERSE_MAX_SYMBOLS` 코호트 로테이션 + `JUDGE_TOP_N` 판단 압축 + 일일 LLM 판단 상한 폴백 강등).
 
 ---
 

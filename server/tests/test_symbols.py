@@ -103,3 +103,22 @@ async def test_resolve_no_limit_returns_all():
     src = _FakeSource(["000660", "035720"])
     out = await resolve_symbols(src, include=["005930"])
     assert out == ["005930", "000660", "035720"]
+
+
+# ── 코호트 로테이션 (offset) ──────────────────────────────────────────────────
+async def test_resolve_offset_rotates_cohorts():
+    src = _FakeSource(["A00001", "B00002", "C00003", "D00004"])
+    assert await resolve_symbols(src, limit=2, offset=0) == ["A00001", "B00002"]
+    assert await resolve_symbols(src, limit=2, offset=2) == ["C00003", "D00004"]
+    assert await resolve_symbols(src, limit=2, offset=4) == ["A00001", "B00002"]   # 한 바퀴
+
+
+async def test_resolve_offset_wraps_around():
+    src = _FakeSource(["A00001", "B00002", "C00003"])
+    assert await resolve_symbols(src, limit=2, offset=2) == ["C00003", "A00001"]   # 경계 넘어 순환
+
+
+async def test_resolve_offset_keeps_include_priority():
+    src = _FakeSource(["A00001", "B00002", "C00003"])
+    out = await resolve_symbols(src, limit=3, include=["005930"], offset=1)
+    assert out == ["005930", "B00002", "C00003"]               # 워치리스트 항상 선두
