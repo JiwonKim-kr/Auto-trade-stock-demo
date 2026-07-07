@@ -52,6 +52,14 @@ def _dec(s: str | None) -> Decimal:
     return Decimal(s) if s else Decimal(0)
 
 
+def _utc(dt: datetime | None) -> datetime | None:
+    """SQLite 는 tz 를 보존하지 않는다(naive UTC 벽시각으로 돌아옴) → 로드 시 UTC 재부착.
+    naive 인 채로 astimezone 을 부르면 로컬(KST)로 오인해 9시간 시프트되는 버그 방지."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class Repository:
     def __init__(self, sessionmaker: async_sessionmaker):
         self._sm = sessionmaker
@@ -160,7 +168,7 @@ class Repository:
                 return None
             rows = (await s.execute(
                 select(PositionRow).where(PositionRow.snapshot_id == head.id))).scalars().all()
-            return head.ts, {r.symbol: Decimal(r.quantity) for r in rows}
+            return _utc(head.ts), {r.symbol: Decimal(r.quantity) for r in rows}
 
     async def submitted_qty_since(self, ts: datetime) -> dict[str, Decimal]:
         """ts 이후 전송(SUBMITTED) 주문의 심볼별 순증감(매수+·매도−) — 기대 수량 근사.
@@ -192,7 +200,8 @@ class Repository:
         return PaperPortfolio(
             cash=Decimal(state.cash),
             positions={r.symbol: PaperPosition(quantity=Decimal(r.quantity),
-                                               avg_cost=Decimal(r.avg_cost)) for r in rows},
+                                               avg_cost=Decimal(r.avg_cost),
+                                               opened_at=_utc(r.opened_at)) for r in rows},
             realized_cum=Decimal(state.realized_cum),
             trade_count=state.trade_count,
         )
@@ -210,8 +219,9 @@ class Repository:
             state.updated_at = datetime.now(timezone.utc)
             await s.execute(delete(PaperPositionRow))
             for symbol, pos in paper.positions.items():
+                opened = pos.opened_at.astimezone(timezone.utc) if pos.opened_at else None
                 s.add(PaperPositionRow(symbol=symbol, quantity=str(pos.quantity),
-                                       avg_cost=str(pos.avg_cost)))
+                                       avg_cost=str(pos.avg_cost), opened_at=opened))
 
     async def append_paper_equity(
         self, ts: datetime, equity: Decimal, cash: Decimal, positions_value: Decimal,
@@ -223,6 +233,13 @@ class Repository:
                 equity=str(equity), cash=str(cash), positions_value=str(positions_value),
                 realized_cum=str(realized_cum),
                 benchmark_price=str(benchmark_price) if benchmark_price is not None else None))
+
+    async def count_trading_days_since(self, trade_date: str) -> int:
+        """해당 KST 날짜 **이후** 틱이 돌았던 거래일 수(자산곡선 날짜 기준) — 타임스톱 입력."""
+        async with self._sm() as s:
+            return (await s.scalar(
+                select(func.count(func.distinct(PaperEquityRow.trade_date)))
+                .where(PaperEquityRow.trade_date > trade_date))) or 0
 
     async def load_daily_equity(self) -> list[tuple[str, Decimal, Decimal | None]]:
         """일별 자산곡선 [(날짜, 그날 마지막 equity, 그날 마지막 벤치마크가)] — 평가 입력."""

@@ -115,6 +115,31 @@ def test_holdings_503_without_toss():
     assert r.status_code == 503
 
 
+# ── P0 §1.1: LIVE 는 DB 필수 ──────────────────────────────────────────────────
+def test_live_without_db_downgrades_to_dry_run(monkeypatch):
+    # DB 없는 LIVE = 일일한도 틱마다 리셋·리컨실 없음 → lifespan 이 강제 강등해야 한다
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
+    monkeypatch.setenv("I_UNDERSTAND_LIVE_REAL_MONEY", "YES")
+    app = create_app()
+    with TestClient(app) as c:
+        assert c.get("/api/status", headers=KEY).json()["mode"] == "DRY_RUN"
+
+
+def test_live_with_db_stays_live(monkeypatch, tmp_path):
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
+    monkeypatch.setenv("I_UNDERSTAND_LIVE_REAL_MONEY", "YES")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/live.db")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with TestClient(app) as c:
+            assert c.get("/api/status", headers=KEY).json()["mode"] == "LIVE"
+    finally:
+        get_settings.cache_clear()          # 다른 테스트가 깨끗한 설정을 읽도록
+
+
 def test_context_from_holdings():
     h = Holdings.model_validate(fx("holdings.json"))
     ctx = context_from_holdings(h, OPEN_KST)

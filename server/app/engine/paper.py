@@ -20,6 +20,7 @@ trade_count 는 **매도(청산) 발생 횟수** = 완결 왕복 수 — 평가 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from app.engine.costs import CostConfig
@@ -31,6 +32,7 @@ from app.toss.models import Holdings
 class PaperPosition:
     quantity: Decimal
     avg_cost: Decimal                      # 매수 비용 포함 취득단가
+    opened_at: datetime | None = None      # 최초 진입 시각(타임스톱 기준 — 추가매수에도 유지)
 
 
 @dataclass
@@ -61,15 +63,20 @@ class PaperPortfolio:
     trade_count: int = 0                   # 완결 왕복(매도) 수 — 평가 표본 게이트 입력
 
     # ── 모의 체결 ─────────────────────────────────────────────────────────────
-    def apply_fill(self, req: OrderRequest, cost: CostConfig) -> PaperFill | None:
-        """DRY_RUN 의도 주문 1건 모의 체결. 가격/수량 없으면 None(체결 불가)."""
+    def apply_fill(self, req: OrderRequest, cost: CostConfig,
+                   now: datetime | None = None) -> PaperFill | None:
+        """DRY_RUN 의도 주문 1건 모의 체결. 가격/수량 없으면 None(체결 불가).
+
+        now: 신규 매수 포지션의 opened_at(타임스톱 기준). 미전달 시 opened_at 없음(타임스톱 미적용).
+        """
         if req.price is None or req.quantity is None or req.quantity <= 0:
             return None
         if req.side is Side.BUY:
-            return self._fill_buy(req.symbol, req.quantity, req.price, cost)
+            return self._fill_buy(req.symbol, req.quantity, req.price, cost, now)
         return self._fill_sell(req.symbol, req.quantity, req.price, cost)
 
-    def _fill_buy(self, symbol: str, qty: Decimal, price: Decimal, cost: CostConfig) -> PaperFill:
+    def _fill_buy(self, symbol: str, qty: Decimal, price: Decimal, cost: CostConfig,
+                  now: datetime | None) -> PaperFill:
         fill_price = price * (1 + cost.slippage_rate)          # 슬리피지 불리 방향
         gross = qty * fill_price
         total_cost = gross * (1 + cost.commission_rate)        # 수수료 포함 취득원가
@@ -79,8 +86,9 @@ class PaperPortfolio:
         self.cash -= total_cost
         pos = self.positions.get(symbol)
         if pos is None:
-            self.positions[symbol] = PaperPosition(quantity=qty, avg_cost=total_cost / qty)
-        else:                                                  # 취득원가 가중 평균
+            self.positions[symbol] = PaperPosition(quantity=qty, avg_cost=total_cost / qty,
+                                                   opened_at=now)
+        else:                                                  # 취득원가 가중 평균(opened_at 유지)
             new_qty = pos.quantity + qty
             pos.avg_cost = (pos.quantity * pos.avg_cost + total_cost) / new_qty
             pos.quantity = new_qty

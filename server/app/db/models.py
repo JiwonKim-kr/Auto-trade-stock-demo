@@ -135,6 +135,7 @@ class PaperPositionRow(Base):
     symbol: Mapped[str] = mapped_column(Text, unique=True)
     quantity: Mapped[str] = mapped_column(Text)
     avg_cost: Mapped[str] = mapped_column(Text)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # 타임스톱 기준
 
 
 class PaperEquityRow(Base):

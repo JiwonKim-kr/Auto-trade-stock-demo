@@ -109,6 +109,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 | 킬스위치 | 수동(`/api/kill-switch`) 또는 LIVE 리컨실 불일치 시 자동 | **수동만**(원인 확인 후) |
 | 서킷브레이커(일일) | 일일 손실 ≤ −5% | 다음 거래일 자동 |
 | 서킷브레이커(낙폭) | 고점대비 −15% | **−8% 까지 회복 시** 자동(히스테리시스) |
+| **결정적 청산(LLM 우회)** | 포지션 손실 −8%(손절) · 보유 20거래일 초과(타임스톱) → 강제 매도 | 해당 없음(포지션별 1회) |
 | 비용 게이트 | 기대이동폭 < 라운드트립×3.5 인 매수 | 해당 없음(주문별 판정) |
 | 레짐 필터 | 시장 σ ≥1% 노출 ×0.5 · ≥2% 신규 중단 | σ 하락 시 자동 |
 | LLM 비용가드 | 일일 판단 `DAILY_LLM_DECISION_CAP` 도달 → 폴백 강등 | 다음 날 자동 |
@@ -140,5 +141,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 
 `TRADING_MODE=LIVE` + `I_UNDERSTAND_LIVE_REAL_MONEY=YES` 를 **process env** 로 줘야 LIVE 가
 되지만(파일만으론 안 됨 — 의도된 마찰), **주문 전송 executor 가 아직 없어** LIVE 로 켜도 주문은
-`FAILED(executor 미설정)` 로 기록만 된다. 실제 LIVE 는 로드맵 M3(executor·체결 조회) 구현과
-**페이퍼 평가 게이트(N≥100·유의성) 통과 후** 소액 1주부터.
+`FAILED(executor 미설정)` 로 기록만 된다. 또한 **`DATABASE_URL` 없이 LIVE 를 켜면 DRY_RUN 으로
+강제 강등**된다(일일 한도 누적·리컨실·멱등 2차방어가 DB 전제 — 기동 로그에 CRITICAL 경고).
+실제 LIVE 는 로드맵 M3(executor·체결 조회) 구현과 **페이퍼 평가 게이트(N≥100·유의성) 통과 후**
+소액 1주부터.

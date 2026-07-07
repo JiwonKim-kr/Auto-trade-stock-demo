@@ -41,6 +41,18 @@ def test_buy_blends_avg_cost():
     assert pos.quantity == D("20")
     assert D("15000") < pos.avg_cost < D("15100")                 # 가중평균 + 비용
 
+
+def test_buy_records_opened_at_and_keeps_on_addon():
+    from datetime import datetime, timezone
+
+    t1 = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    p = PaperPortfolio(cash=D("1000000"))
+    p.apply_fill(buy(qty="5", price="10000"), COST, now=t1)
+    assert p.positions["005930"].opened_at == t1                  # 신규 진입 시각
+    p.apply_fill(buy(qty="5", price="10000"), COST, now=t2)
+    assert p.positions["005930"].opened_at == t1                  # 추가매수에도 유지(타임스톱 기준)
+
 def test_sell_fill_realized_net_and_trade_count():
     p = PaperPortfolio(cash=D("0"),
                        positions={"005930": PaperPosition(quantity=D("10"), avg_cost=D("10000"))})

@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # (비활성 시 틱은 실계좌 보유/현금으로 관찰만 — 기존 동작).
     paper_seed_krw: Decimal = Decimal("10000000")
 
+    # 결정적 청산(LLM 우회 하드 룰): 손절·타임스톱 — 페이퍼 포지션 대상(LIVE 는 체결 추적 후)
+    exit_rules_enabled: bool = True
+    exit_stop_loss_rate: Decimal = Decimal("0.08")      # 취득단가 대비 -8% → 강제 청산
+    exit_time_stop_days: int = 20                       # 보유 20 거래일 초과 → 강제 청산
+
     # 워치리스트: 쉼표 구분 종목코드. 명시 의도 → 심볼 소스보다 우선·항상 평가. 보유 종목도 항상 평가됨.
     watchlist: str = ""
 

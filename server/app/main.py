@@ -20,6 +20,7 @@ from app.db.repo import Repository
 from app.db.session import init_db, make_engine, make_sessionmaker
 from app.orders.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from app.orders.guardrails import GuardrailConfig
+from app.orders.models import TradingMode
 from app.orders.service import OrderService
 from app.toss.client import TossClient, TossConfig
 
@@ -73,6 +74,15 @@ async def lifespan(app: FastAPI):
         logger.info("DB 영속화 활성")
     else:
         logger.warning("DATABASE_URL 미설정 — 인메모리(재시작 시 원장/엔진 상태 소실)")
+
+    # 안전 강제(P0): LIVE 는 DB 필수 — 일일 한도 교차-틱 누적·리컨실·멱등 2차방어·상태 생존이
+    # 전부 DB 전제다. 없으면 일일 한도가 틱마다 리셋되는 등 실자금 방어가 무너진다 → 강제 강등.
+    if mode is TradingMode.LIVE and app.state.repo is None:
+        mode = TradingMode.DRY_RUN
+        app.state.order_service.mode = mode
+        app.state.trading_mode = mode
+        logger.critical("LIVE 요청됐으나 DATABASE_URL 미설정 — DRY_RUN 강등 "
+                        "(일일한도 누적·리컨실·멱등 2차방어가 DB 전제)")
 
     app.state.toss_client = None
     if settings.toss_client_id and settings.toss_client_secret:

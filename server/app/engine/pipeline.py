@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from app.engine.allocator import allocate
 from app.engine.costs import EntryGate
+from app.engine.exits import ForcedExit
 from app.engine.llm import (
     Action,
     CandidateContext,
@@ -47,6 +48,7 @@ class TickResult:
     circuit_breaker_reason: str = ""
     cost_gated: list[str] = field(default_factory=list)   # 비용 게이트로 차단된 매수 후보
     regime: dict = field(default_factory=dict)             # 레짐 판정(level·σ·배수) — 미평가 시 빈 dict
+    forced_exits: list[dict] = field(default_factory=list)  # 결정적 청산(손절·타임스톱) 발동 내역
 
 
 class DeterministicJudge:
@@ -78,19 +80,22 @@ async def run_tick(
     holdings=None,
     cash_buying_power_krw: Decimal | None = None,
     max_buy_candidates: int | None = None,
+    forced_exits: list[ForcedExit] | None = None,
 ) -> TickResult:
     screen_config = screen_config or ScreenConfig()
     mode, ks = order_service.mode.value, order_service.kill_switch
 
     cb = order_service.circuit_breaker
     regime: RegimeAssessment | None = None
+    forced = {f.symbol: f for f in (forced_exits or [])}
 
     def _result(candidates, decisions, orders, universe, note="", cost_gated=None) -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
                           candidates=candidates, decisions=decisions, orders=orders, note=note,
                           circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason,
                           cost_gated=cost_gated or [],
-                          regime=regime.as_dict() if regime else {})
+                          regime=regime.as_dict() if regime else {},
+                          forced_exits=[f.as_dict() for f in forced.values()])
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union. holdings 는 호출자가 선조회해 주입 가능
     #    (라우트가 리컨실에 이미 조회한 것을 재사용 — 레이트리밋 보호, 이중 조회 방지)
@@ -161,12 +166,18 @@ async def run_tick(
         for c in candidates:
             c.market_regime = f"{regime.level.value} — {regime.reason}"
 
-    # 7) 조사 (상위 N) — 선택
+    # 7) 조사 (상위 N) — 선택. 강제 청산 심볼은 조사·판단 모두 제외(비용 절약 + LLM 우회)
+    judge_candidates = [c for c in candidates if c.symbol not in forced]
     if research is not None:
-        await research_candidates(candidates, research, top_n=research_top_n)
+        await research_candidates(judge_candidates, research, top_n=research_top_n)
 
-    # 8) 판단
-    decisions = await decide_candidates(candidates, judge)
+    # 8) 판단 — 결정적 청산(손절·타임스톱)이 최우선(LLM 이 HOLD 로 뒤집을 수 없다)
+    decisions = [
+        Decision(action=Action.SELL, symbol=f.symbol, confidence=1.0,
+                 rationale=f"결정적 청산: {f.reason}")
+        for f in forced.values() if f.symbol in {c.symbol for c in candidates}
+    ]
+    decisions += await decide_candidates(judge_candidates, judge)
 
     # 9) 사이징 + 주문 (DRY_RUN; 실주문 0은 주문층이 보장)
     ctx_by = {c.symbol: c for c in candidates}

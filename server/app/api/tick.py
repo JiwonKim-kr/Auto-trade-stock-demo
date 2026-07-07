@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
+from app.engine.exits import ExitConfig, evaluate_exits
 from app.engine.llm import ClaudeJudge
 from app.engine.paper import PaperPortfolio
 from app.engine.pipeline import DeterministicJudge, run_tick
@@ -170,11 +171,25 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
             bench_price = marks.get(settings.regime_symbol) if settings.regime_symbol else None
         tick_holdings, tick_cash = paper.to_synthetic_holdings(marks), paper.cash
 
+    # 결정적 청산(손절·타임스톱) — 페이퍼 장부 기준 판정, run_tick 이 LLM 우회 SELL 생성
+    forced_exits = None
+    if paper is not None and settings.exit_rules_enabled and paper.positions:
+        days_held: dict[str, int] = {}
+        for sym, pos in paper.positions.items():
+            if pos.opened_at is not None:
+                days_held[sym] = await repo.count_trading_days_since(
+                    trade_date_kst(pos.opened_at))
+        forced_exits = evaluate_exits(
+            paper.positions, marks, days_held,
+            ExitConfig(stop_loss_rate=settings.exit_stop_loss_rate,
+                       time_stop_days=settings.exit_time_stop_days))
+
     result = await run_tick(
         toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
         now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
         daily_buy_used_krw=daily_used, regime_config=regime_config, holdings=tick_holdings,
         cash_buying_power_krw=tick_cash, max_buy_candidates=settings.judge_top_n,
+        forced_exits=forced_exits,
     )
 
     tick_id = None
@@ -187,7 +202,7 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
             for o in result.orders:
                 if o.status is not OrderStatus.DRY_RUN:
                     continue
-                f = paper.apply_fill(o.request, entry_gate.cost)
+                f = paper.apply_fill(o.request, entry_gate.cost, now=now)
                 if f is None:
                     continue
                 fills.append(f.as_dict())
@@ -212,6 +227,7 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
         "candidates": result.candidates,
         "cost_gated": result.cost_gated,
         "regime": result.regime,
+        "forced_exits": result.forced_exits,
         "reconcile": reconcile_report,
         "paper": paper_summary,
         "decisions": [d.model_dump() for d in result.decisions],

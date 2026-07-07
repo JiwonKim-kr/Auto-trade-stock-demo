@@ -21,7 +21,7 @@ from app.engine.llm import Action, Decision
 from app.engine.paper import PaperPortfolio, PaperPosition
 from app.engine.pipeline import TickResult
 from app.main import create_app
-from app.orders.guardrails import KST
+from app.orders.guardrails import KST, GuardrailConfig
 from app.orders.models import (
     OrderRequest,
     OrderResult,
@@ -169,16 +169,29 @@ async def test_count_ticks_and_decisions_today(tmp_path):
 async def test_paper_roundtrip(tmp_path):
     repo = await make_repo(tmp_path)
     assert await repo.load_paper() is None                        # 첫 실행
+    opened = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
     p = PaperPortfolio(cash=Decimal("900000"),
-                       positions={"005930": PaperPosition(Decimal("2"), Decimal("50000"))},
+                       positions={"005930": PaperPosition(Decimal("2"), Decimal("50000"),
+                                                          opened_at=opened)},
                        realized_cum=Decimal("1234"), trade_count=3)
     await repo.save_paper(p, seed=Decimal("1000000"))
     loaded = await repo.load_paper()
     assert loaded.cash == Decimal("900000") and loaded.trade_count == 3
     assert loaded.positions["005930"].avg_cost == Decimal("50000")
+    assert loaded.positions["005930"].opened_at == opened         # UTC 정규화 왕복(타임스톱 기준 생존)
     p.positions.clear()                                           # 전량 청산 후 저장 → 교체 반영
     await repo.save_paper(p)
     assert (await repo.load_paper()).positions == {}
+
+
+async def test_count_trading_days_since(tmp_path):
+    repo = await make_repo(tmp_path)
+    for day, eq in ((1, "100"), (1, "101"), (2, "102"), (3, "103")):   # 7/1 두 틱 = 1거래일
+        await repo.append_paper_equity(datetime(2026, 7, day, 10, 0, tzinfo=KST),
+                                       Decimal(eq), Decimal(eq), Decimal(0), Decimal(0), None)
+    assert await repo.count_trading_days_since("2026-07-01") == 2      # 7/2·7/3 (이후만, distinct)
+    assert await repo.count_trading_days_since("2026-06-30") == 3
+    assert await repo.count_trading_days_since("2026-07-03") == 0
 
 
 async def test_paper_equity_daily_collapse(tmp_path):
@@ -288,6 +301,37 @@ async def test_evaluation_route_disabled_without_repo():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.get("/api/evaluation", headers=KEY)
     assert r.json()["status"] == "DISABLED"
+
+
+# ── 결정적 청산 (P0 §1.2) — end-to-end ────────────────────────────────────────
+async def test_tick_forced_exit_sells_losing_paper_position(tmp_path):
+    repo = await make_repo(tmp_path)
+    opened = datetime(2026, 6, 1, 10, 0, tzinfo=KST)
+    await repo.save_paper(PaperPortfolio(
+        cash=Decimal("1000000"),
+        positions={"005930": PaperPosition(Decimal("10"), Decimal("10000"), opened_at=opened)}))
+
+    class CrashToss(FakeToss):
+        async def get_prices(self, symbols):
+            # 페이퍼 마킹: 10000 → 9000 = -10% ≤ -8% → 손절 발동
+            return [Price(symbol="005930", timestamp="2026-07-03T10:00:00+09:00",
+                          last_price=Decimal("9000"), currency="KRW")]
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = CrashToss()
+        app.state.repo = repo
+        # 라우트는 실시간 now 를 쓰므로 장시간 가드를 꺼서 시각 비의존 테스트로
+        app.state.order_service.config = GuardrailConfig(enforce_market_hours=False)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post("/internal/tick", headers=KEY)
+    body = r.json()
+    assert body["forced_exits"] and "손절" in body["forced_exits"][0]["reason"]
+    sells = [d for d in body["decisions"] if d["action"] == "SELL"]
+    assert sells and "결정적 청산" in sells[0]["rationale"]          # LLM 우회 SELL
+    after = await repo.load_paper()
+    assert "005930" not in after.positions                            # 전량 청산 반영
+    assert after.trade_count == 1 and after.realized_cum < 0          # 넷 실현손실 확정
 
 
 # ── M1: 틱 직렬화 락 · LLM 비용가드 · 유니버스 로테이션 ────────────────────────
