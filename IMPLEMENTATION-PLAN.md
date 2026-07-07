@@ -1,0 +1,465 @@
+# 구현·개선 계획서 (에이전트 핸드오프용)
+
+> **이 문서의 목적**: 이후 작업을 이어받는 에이전트(모델 급과 무관)가 대화 맥락 없이 같은 품질로
+> 구현하도록, **복잡한 로직은 알고리즘·수식·함정·통합 지점·테스트까지** 적는다.
+> 현재 상태: M1 완료(로컬 상시 페이퍼 운용 가능, 215 테스트). 사용법은 [USAGE.md](USAGE.md),
+> 설계 원칙은 [TECH-STACK.md](TECH-STACK.md), 토스 API 사실은 [TOSS-AI-TRADING-INSIGHTS.md](TOSS-AI-TRADING-INSIGHTS.md).
+> 우선순위: **P0(안전 필수) → P1(성능/비용) → P2(클라우드 M2) → P3(LIVE M3) → P4(정교화)**.
+
+---
+
+## §0. 불변 원칙 — 구현 시 절대 위반 금지
+
+1. **LLM 은 방향+confidence 만.** 수량·비중·기대이동폭 등 숫자는 결정적 코드가 계산한다.
+2. **하드 안전장치는 LLM 바깥.** 가드레일·서킷브레이커·게이트는 LLM 이 우회 불가한 코드 경로에.
+3. **어떤 자동 장치도 매도(청산)는 막지 않는다.** 유일한 예외 = 킬스위치(수동 완전 정지 — 의도됨).
+4. **DRY_RUN 에서 executor 호출 0.** 이 불변식을 깨는 diff 는 어떤 이유로도 거부.
+5. **돈은 Decimal, float 금지.** DB 저장은 정확 10진 문자열(SQLite 교차 정밀성). 통계량만 float 허용.
+6. **DB/토스 I/O 는 경계(api/tick.py·routes·lifespan)에만.** `run_tick` 은 순수 오케스트레이션 —
+   새 기능은 주입 파라미터(예: `entry_gate`, `regime_config`)로 넣는다.
+7. **스모크 우선.** 외부 API 는 실응답 확인 전 매핑 코드를 확정하지 않는다. 실응답은 픽스처로 회귀 고정.
+8. 기본값은 무회귀(opt-in) 또는 보수적. 새 안전장치는 fail-closed, 시장 전체 오버레이는 fail-open(×1)
+   — 근거는 TECH-STACK §5 레짐 필터 항목.
+
+---
+
+## §1. P0 — 안전 필수 (LIVE 이전에 반드시)
+
+### 1.1 ✅ LIVE 모드는 DB 필수 — 강제 강등 (구현됨)
+
+**문제(점검 발견)**: 일일 매수 한도의 교차-틱 누적, 킬스위치/서킷브레이커 재시작 생존, 리컨실,
+멱등 2차 방어가 **전부 DB 전제**다. 그런데 `DATABASE_URL` 없이 `TRADING_MODE=LIVE` 를 켤 수 있다
+→ 이 상태에선 일일 한도가 **틱마다 리셋**되고(무한 매수 가능), 리컨실도 없다.
+
+**구현** ([server/app/main.py](server/app/main.py) lifespan):
+- 위치: `mode, warnings = load_trading_mode()` 직후 ~ `OrderService` 생성 사이에서 판정하되,
+  repo 초기화가 mode 판정보다 뒤에 있으므로 **repo 초기화 후 mode 를 재검증**하는 블록을 넣는다:
+  ```python
+  if mode is TradingMode.LIVE and app.state.repo is None:
+      mode = TradingMode.DRY_RUN
+      app.state.order_service.mode = mode      # 이미 생성된 서비스도 강등
+      logger.critical("LIVE 요청됐으나 DATABASE_URL 미설정 — DRY_RUN 강등 "
+                      "(일일한도 누적·리컨실·멱등 2차방어가 DB 전제)")
+  ```
+  주의: `OrderService.mode` 는 평범한 속성이라 대입으로 강등 가능. 강등 후 `app.state.trading_mode` 도 갱신.
+- **테스트**: env `TRADING_MODE=LIVE, I_UNDERSTAND_LIVE_REAL_MONEY=YES`(process env 로 주입) +
+  `DATABASE_URL` 없음 → lifespan 후 `app.state.order_service.mode is DRY_RUN`.
+  기존 `load_trading_mode` 테스트와 겹치지 않게 lifespan 통합 테스트로.
+
+### 1.2 ✅ 결정적 청산 규칙 — 손절 · 타임스톱 (구현됨 — 페이퍼 대상. LIVE 확장은 §4.3 fills 후)
+
+**문제(점검 발견)**: 진입은 다층 방어(스크리너→게이트→레짐→가드레일)인데 **청산은 LLM 재량뿐**이다.
+개별 포지션이 −50% 가도 LLM 이 SELL 을 안 내면 방치된다(종목당 10% 상한 덕에 포트폴리오 피해는
+−5%p 로 유계지만, 10종목 동반 하락이면 서킷브레이커 −15% 까지 무방비). study.md 의 원설계도
+"청산 규칙(손절/타임스톱/시그널 소멸)이 보유기간을 결정"이었다. **안전과 효용(회전율→표본 축적)
+양쪽의 핵심.**
+
+**설계 — 경계 판정 + 강제 매도 주입** (pipeline 순수성 유지):
+
+1. **데이터**: 포지션 진입 시각 필요.
+   - [server/app/engine/paper.py](server/app/engine/paper.py) `PaperPosition` 에 `opened_at: datetime | None = None` 추가.
+     `_fill_buy` 에서 신규 포지션 생성 시 `opened_at=now`(파라미터로 전달 — `apply_fill(req, cost, now)`
+     시그니처 변경, 호출부는 tick.py 한 곳). **추가매수 시 opened_at 유지**(최초 진입 기준 — 타임스톱은
+     "그 아이디어에 돈이 묶인 시간"을 재는 것).
+   - DB [server/app/db/models.py](server/app/db/models.py) `PaperPositionRow` 에 `opened_at`(DateTime tz, nullable) 추가
+     + repo save/load 왕복. 기존 행 호환: nullable 이므로 None 이면 타임스톱 미적용(다음 매수부터 적용).
+   - LIVE 는 §4.3 fills 기반(선행 의존) — 이 단계는 페이퍼만으로 완결.
+
+2. **판정 모듈** `server/app/engine/exits.py` (신규, 순수):
+   ```python
+   class ExitConfig(BaseModel):
+       stop_loss_rate: Decimal = Decimal("0.08")   # 취득단가 대비 -8% 이하 → 강제 청산
+       time_stop_days: int = 20                     # 보유 20 거래일 초과 → 강제 청산
+       enabled: bool = True
+
+   @dataclass
+   class ForcedExit:
+       symbol: str
+       reason: str          # 예: "손절 −9.1% ≤ −8.0%" / "타임스톱 21거래일 > 20"
+
+   def evaluate_exits(positions, marks, trading_days_held: dict[str, int],
+                      cfg: ExitConfig) -> list[ForcedExit]: ...
+   ```
+   - 손절 판정: `(mark − avg_cost)/avg_cost ≤ −stop_loss_rate`. mark 없으면(시세 실패) **판정 보류**
+     (허위 청산 방지 — 다음 틱에 재시도).
+   - **거래일 수 계산**: 달력일이 아니라 거래일. 데이터 소스 = `paper_equity` 의 `trade_date` 목록
+     (틱이 돌았던 날 = 거래일 근사). `trading_days_held[sym] = count(distinct trade_date >
+     opened_at의 KST 날짜)`. repo 헬퍼 `count_trading_days_since(date) -> int` 추가
+     (`SELECT COUNT(DISTINCT trade_date) FROM paper_equity WHERE trade_date > :d`).
+   - 우선순위: 손절이 타임스톱보다 우선(사유 문자열에 반영).
+
+3. **파이프라인 통합** ([server/app/engine/pipeline.py](server/app/engine/pipeline.py)):
+   - `run_tick(..., forced_exits: list[ForcedExit] | None = None)` 파라미터 추가.
+   - 8) 판단 단계에서: forced 심볼은 **LLM 판단을 건너뛰고**
+     `Decision(action=SELL, symbol=..., confidence=1.0, rationale=f"결정적 청산: {reason}")` 생성.
+     LLM 후보 리스트에서 제외(비용 절약 + LLM 이 HOLD 로 뒤집는 것 원천 차단 — §0-2).
+   - 강제 SELL 은 allocator 에서 기존 SELL 경로(전량 청산) 그대로. 레짐 배수·비용 게이트 무관(§0-3).
+4. **경계 조립** ([server/app/api/tick.py](server/app/api/tick.py)): 페이퍼 로드·마킹 직후
+   `forced = evaluate_exits(paper.positions, marks, days_held, exit_cfg)` → `run_tick(forced_exits=forced)`.
+   응답에 `"forced_exits": [...]` 노출 + decisions 기록엔 자동 포함(rationale 로 식별).
+5. **설정**: `EXIT_STOP_LOSS_RATE=0.08`, `EXIT_TIME_STOP_DAYS=20`, `EXIT_RULES_ENABLED=true`.
+6. **테스트**: (a) 손절 경계(정확히 −8% = 발동), (b) mark 없음 → 보류, (c) 타임스톱 거래일 카운트
+   (같은 날 여러 틱 = 1거래일), (d) 강제 SELL 이 LLM 을 우회하고 주문 생성, (e) 킬스위치 시 REJECTED
+   (킬스위치는 매도도 막음 — 의도), (f) opened_at None 하위호환.
+
+### 1.3 입출금 ↔ 서킷브레이커 왜곡 (LIVE 시 운영 절차)
+
+**문제(점검 발견)**: 서킷브레이커 HWM/낙폭은 자기자본 절대값 기준. LIVE 에서 **예수금 입금 → HWM
+상향 → 직후 출금 → 낙폭 오탐**(반대로 입금이 실제 손실을 가릴 수도). 페이퍼는 폐쇄계라 무관.
+
+**구현(경량)**: `POST /api/circuit-breaker/reset` 엔드포인트 — HWM 을 현재 자기자본으로 재설정
+(+감사 기록 `actor=api, action=cb_reset`). 운영 절차 문서화: "입출금 후 반드시 reset 호출".
+정석(자금 흐름 조정 수익률, TWR)은 P4 — 입출금 이벤트 테이블 + 시간가중 수익률로 equity 곡선 정규화.
+
+---
+
+## §2. P1 — 성능/비용 (페이퍼 데이터가 쌓이기 전에)
+
+### 2.1 캔들 캐시 — 토스 API 콜 92% 절감
+
+**문제(점검 발견)**: 캔들은 종목별 호출. 유니버스 40 × 78틱/일 ≈ **3,120콜/일**로 BASIC tier 429 의
+주범이 될 구조. 그런데 일봉 데이터는 장중에 마지막(진행 중) 봉만 바뀐다 — 매 틱 재조회는 낭비.
+
+**설계 — 주입형 캐싱 래퍼**(pipeline 무변경, §0-6):
+```python
+# server/app/toss/caching.py (신규)
+class CachingToss:
+    """toss 클라이언트 덕타이핑 래퍼 — get_candles 만 TTL 캐시, 나머지는 위임."""
+    def __init__(self, inner, repo, ttl_minutes: int = 60): ...
+    async def get_candles(self, symbol, interval="1d"):
+        cached = await self._repo.get_cached_candles(symbol, interval)   # (fetched_at, json)
+        if cached and now - fetched_at < ttl: return parse(cached)
+        candles = await self._inner.get_candles(symbol, interval)
+        await self._repo.save_cached_candles(symbol, interval, candles)  # upsert
+        return candles
+    def __getattr__(self, name): return getattr(self._inner, name)      # 위임
+```
+- DB: `candle_cache(symbol TEXT, interval TEXT, payload_json TEXT, fetched_at DateTime, UNIQUE(symbol, interval))`.
+  payload 는 `[c.model_dump(mode="json") for c in candles]` — 역직렬화는 `Candle.model_validate`.
+- 조립: tick.py 에서 `toss_for_tick = CachingToss(toss, repo) if repo else toss` 후 run_tick 에 전달.
+  **리컨실·페이퍼 마킹의 holdings/prices 는 캐시하지 않는다**(실시간성 필요 — get_candles 만).
+- TTL 트레이드오프 명시: 60분 캐시 = 스크리너 신호가 최대 60분 지연. 일봉 SMA/RSI 신호는 하루
+  단위라 영향 미미. 진입가는 어차피 `last_close` 지정가 + 다음 틱 페이퍼 체결이라 일관.
+- 효과: 40콜/틱 → 첫 틱 40콜 + 이후 시간당 40콜 ≈ 240콜/일 (**92% 절감**).
+- **테스트**: TTL 내 재호출 시 inner 미호출(콜 카운터), TTL 경과 후 재조회, `__getattr__` 위임,
+  repo 없으면 래핑 생략.
+
+### 2.2 ADV(거래대금) 기반 지능형 사전선별 — 탐색/활용 2단계
+
+**문제**: 현행 코호트 로테이션은 공평하지만 무차별 — 유동성 없는 종목에 판단 예산을 똑같이 쓴다.
+**설계 핵심**: 별도 데이터 소스 없이, **틱이 이미 받아온 캔들에서 ADV 를 공짜로 축적**한다.
+
+1. **축적**: pipeline 4) 캔들 루프에서 계산한 값을 TickResult 에 실어 경계에서 저장하거나,
+   간단히 tick.py 가 스크리닝 후 `repo.upsert_symbol_stats(symbol, adv20, last_trade_date)` 호출.
+   `adv20 = mean(close_i × volume_i, 최근 20봉)` (Decimal). DB:
+   `symbol_stats(symbol UNIQUE, adv20_krw TEXT, updated_trade_date TEXT)`.
+2. **선정 알고리즘** (tick.py 유니버스 결정부 교체):
+   ```
+   pool_top   = symbol_stats 에서 adv20 상위 ADV_POOL_SIZE(기본 300)
+   stale      = 시드 전체 중 미측정 or updated_trade_date 가 10거래일 이전
+   n_explore  = ceil(limit × EXPLORE_RATIO(기본 0.2))          # 탐색 슬롯
+   n_exploit  = limit − n_explore
+   코호트     = rotate(pool_top, 틱수 × n_exploit)[:n_exploit]  # 상위 풀 내 로테이션
+              + rotate(stale,   틱수 × n_explore)[:n_explore]   # 미측정 탐색
+   ```
+   - **콜드스타트**: symbol_stats 비어 있음 → pool_top 공집합 → 전 슬롯이 탐색 = **현행 로테이션과
+     동일 동작으로 자연 시작**, 한 바퀴(≈66틱) 후 자동으로 활용 모드 전환. 마이그레이션 불필요.
+   - 워치리스트 우선 포함은 기존과 동일(resolve_symbols include).
+3. **테스트**: 콜드스타트=현행과 동일, 상위 풀 우선 선정, 탐색 슬롯이 stale 을 소진, 비율 경계(ceil).
+
+### 2.3 판단 결과 추적 — LLM confidence 캘리브레이션
+
+**문제(점검 발견)**: 사이징이 `ceiling × confidence` 로 **LLM confidence 를 단조 신뢰**하는데,
+그 confidence 가 실제 승률과 상관 있는지 측정 장치가 없다(전략 개선의 최우선 데이터).
+
+**구현**:
+1. `DecisionRow` 에 `decision_price TEXT nullable` 추가 — 판단 시점 last_close.
+   pipeline 의 Decision 은 가격을 안 가지므로, record_tick 에서 `ctx_by[d.symbol].indicators.last_close`
+   를 함께 저장하도록 `TickResult.decisions` 대신 (decision, price) 튜플…은 침습적 —
+   **간단한 방법**: `Decision` 모델에 `decision_price: float | None = None` 필드 추가(extra 필드,
+   스키마 요구 아님 — LLM 출력엔 없고 `_normalize` 후 pipeline 이 채움).
+2. 분석 스크립트 `server/scripts/calibration_report.py`:
+   - decisions × candle_cache(또는 캔들 재조회)로 각 판단의 **t+5·t+20 거래일 수익률** 계산.
+   - confidence 버킷(0.5~0.6, …, 0.9~1.0)별: BUY 판단의 평균 수익률·승률·표본수 표 출력.
+   - 해석 기준을 스크립트 출력에 포함: "버킷이 단조 증가하지 않으면 confidence 는 사이징 입력으로
+     부적합 → allocator 를 계단 함수(예: conf<0.6 스킵, 0.6~0.8 half, >0.8 full)로 교체 검토".
+3. **테스트**: 버킷 집계 순수 함수 분리 후 단위 테스트.
+
+### 2.4 페이퍼 미체결 모형 — 지정가 대기 주문
+
+**문제**: 현행 페이퍼는 "지정가 즉시 전량 체결" — 급등 추격 매수도 항상 성사되는 낙관 편향.
+**설계**: 주문을 **대기 큐**에 넣고 다음 틱에서 실제 가격 경로로 체결 판정.
+1. DB `paper_pending(id, symbol, side, quantity TEXT, limit_price TEXT, created_at, expires_trade_date TEXT)`
+   — DAY 주문이므로 `expires = 주문일(KST)`.
+2. 틱 시작부(페이퍼 로드 직후): pending 을 심볼별로 그날 캔들과 대조 —
+   - 매수 체결 조건: 이후 관측된 `low ≤ limit_price` (판정용 low 는 당일 진행 봉 — CachingToss 캐시로
+     최대 60분 지연 허용). 체결가 = `min(limit, open)` 근사 대신 **limit 그대로**(보수: 유리한 갭은 무시).
+   - 매도 체결 조건: `high ≥ limit_price`.
+   - 만료: `trade_date > expires` → 미체결 소멸(기록: fills 에 `skipped="만료"`).
+3. 신규 주문은 즉시 체결하지 않고 pending 에 적재. **주의**: 같은 틱의 자산곡선은 현금이 아직
+   안 나간 상태 — 대기 주문 명목액을 `reserved_cash` 로 표기해 이중 사용 방지(사이징 현금 =
+   `cash − Σ pending buy notional`).
+4. 트레이드오프 문서화: 체결 확실성은 현실화되지만 판정 지연(최대 1틱+캐시 TTL). 페이퍼 평가
+   목적엔 보수 방향. `PAPER_FILL_MODEL=immediate|pending`(기본 immediate — 곡선 연속성 보존,
+   전환은 명시적으로).
+5. **테스트**: low 터치 체결/미터치 만료/reserved_cash 차감/모드 스위치 무회귀.
+
+### 2.5 레짐 σ 를 EWMA 로 (반응성 개선)
+
+현행 단순 표준편차(20일 균등가중)는 급변 반영이 느리다. RiskMetrics EWMA 로 교체:
+```
+σ²_t = λ·σ²_{t−1} + (1−λ)·r²_t ,  λ = 0.94 (일간 표준),  σ = √σ²_t
+초기화: 첫 σ² = 첫 min_returns 개 수익률의 단순분산
+```
+[server/app/engine/regime.py](server/app/engine/regime.py) 에 `ewma_daily_vol(closes, lam=0.94)` 추가,
+`RegimeConfig.vol_method: "ewma"|"simple"` (기본 ewma 전환 시 임계 재보정: EWMA 는 급변 시 simple 보다
+크게 나오므로 calm/stress 1.0%/2.0% 유지하되 페이퍼 로그로 레짐 분포 확인 후 조정).
+**테스트**: 균일 수익률에서 simple≈ewma, 최근 급변 시 ewma > simple, λ 경계.
+
+### 2.6 평가 정교화 — Lo 보정 SE + Deflated Sharpe
+
+[server/app/engine/evaluation.py](server/app/engine/evaluation.py) 확장. 표본이 쌓인 뒤(N_days ≥ 60) 의미.
+
+1. **Lo(2002) 자기상관 보정 SE** (Newey-West 형):
+   ```
+   SE_Lo = SE_iid × √( 1 + 2·Σ_{k=1..q} (1 − k/(q+1))·ρ_k ),   q = 5
+   ρ_k = 일일 수익률의 k차 자기상관 = Σ(r_t−r̄)(r_{t−k}−r̄) / Σ(r_t−r̄)²
+   ```
+   ρ_k 합이 음수로 과도해 √ 안이 ≤0 이면 SE_iid 로 폴백(방어).
+2. **Deflated Sharpe Ratio** (Bailey & López de Prado 2014) — "여러 번 시도한 것 중 최고"의 보정:
+   ```
+   PSR(SR*) = Φ( (SR − SR*)·√(N−1) / √(1 − γ₃·SR + ((γ₄−1)/4)·SR²) )
+   SR* = √(V)·( (1−γ)·Φ⁻¹(1 − 1/K) + γ·Φ⁻¹(1 − 1/(K·e)) )
+   ```
+   - SR: **일간**(연환산 아님) 샤프. N: 수익률 표본수. γ₃: 왜도, γ₄: 첨도(정규=3).
+   - V: 시도된 K 개 전략 SR 들의 분산 — 실무 근사로 `V = 1/(N−1)`.
+   - γ = 0.5772156649(오일러-마스케로니). Φ/Φ⁻¹ 는 `statistics.NormalDist().cdf/inv_cdf`.
+   - **K(시도 횟수)는 자동 측정 불가** — 설정 `EVAL_TRIALS_K`(기본 1)로 운영자가 정직하게 기입
+     (파라미터 튜닝 1회 = K+1). 판정: `DSR = PSR(SR*) ≥ 0.95` 를 "유의성 충족"의 상위 기준으로.
+   - 왜도/첨도: `γ₃ = m₃/m₂^1.5`, `γ₄ = m₄/m₂²` (mᵢ = i차 중심적률, 모집단 정의로 단순 계산).
+3. verdict 사다리 확장: 기존 N<100 게이트 → σ=0 → |SR|<2·SE_Lo → DSR<0.95 → 충족.
+4. **테스트**: 자기상관 0 데이터에서 SE_Lo≈SE_iid, 양의 자기상관에서 SE_Lo>SE_iid,
+   DSR 은 K=1 vs K=10 에서 단조 감소, 정규 데이터 γ₃≈0/γ₄≈3.
+
+---
+
+## §3. P2 — 클라우드 자율 운용 (M2)
+
+### 3.1 Dockerfile (+ .dockerignore)
+
+```dockerfile
+# server/Dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+COPY pyproject.toml ./
+COPY app ./app
+COPY data ./data                 # KRX 시드(SYMBOL_SOURCE_PATH=data/krx_symbols.json)
+RUN pip install --no-cache-dir .
+RUN useradd -m runner
+USER runner
+# Cloud Run 은 $PORT 를 주입한다 — 8080 기본
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+```
+`.dockerignore`: `.venv/ tests/ scripts/ *.db __pycache__/ .pytest_cache/ *.egg-info/`.
+scripts 는 이미지에 불필요(진단은 로컬). **주의**: `.env` 류가 이미지에 절대 들어가지 않게 확인.
+
+### 3.2 Terraform 리소스 명세 (`infra/`)
+
+| 리소스 | 필수 설정 | 함정 |
+|---|---|---|
+| `google_artifact_registry_repository` | `asia-northeast3`, docker | |
+| `google_secret_manager_secret` ×5 | TOSS_CLIENT_ID/SECRET · ANTHROPIC_API_KEY · API_KEY · DATABASE_URL | 값은 TF 밖에서 주입(`gcloud secrets versions add`) — state 에 비밀 금지 |
+| `google_sql_database_instance` | PostgreSQL 16, `asia-northeast3`, 최소 사양(db-f1-micro 급) | 삭제 보호 on |
+| `google_cloud_run_v2_service` | env: secret refs. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치) | Cloud SQL 연결: `run.googleapis.com/cloudsql-instances` annotation + unix socket, 또는 Cloud SQL Python Connector |
+| `google_service_account` ×2 | run-sa(Secret accessor·SQL client), scheduler-sa(run invoker) | 최소 권한 |
+| `google_cloud_scheduler_job` | HTTP POST `{run_url}/internal/tick`, **OIDC token**(scheduler-sa, audience=run_url) | cron 은 UTC: 장중 09:00–15:30 KST = `*/5 0-6 * * 1-5` (00:00–06:55 UTC) — 06:30 초과분은 서버 장시간 가드가 거른다. KRX 휴장일도 서버가 거른다(§3.6) |
+
+DATABASE_URL(예): `postgresql+asyncpg://user:pw@/dbname?host=/cloudsql/PROJECT:asia-northeast3:INSTANCE`
+(asyncpg 는 유닉스 소켓을 `host=` 쿼리로 받는다 — 콜론 경로 그대로).
+
+### 3.3 `/internal/tick` OIDC 검증
+
+의존성 `google-auth` 추가. [server/app/api/deps.py](server/app/api/deps.py):
+```python
+async def require_tick_auth(request: Request, x_api_key: str | None = Header(default=None),
+                            authorization: str | None = Header(default=None),
+                            settings: Settings = Depends(get_settings)) -> None:
+    """Scheduler(OIDC Bearer) 또는 로컬(API 키) 이중 경로. 설정된 쪽만 통과."""
+    if authorization and authorization.startswith("Bearer ") and settings.oidc_audience:
+        token = authorization.removeprefix("Bearer ")
+        claims = await run_in_threadpool(          # verify 는 동기 — 스레드풀로
+            id_token.verify_oauth2_token, token,
+            google_requests.Request(), settings.oidc_audience)
+        if claims.get("email") == settings.scheduler_sa_email and claims.get("email_verified"):
+            return
+        raise HTTPException(401, "OIDC 토큰 검증 실패")
+    # 폴백: 기존 API 키(로컬/수동)
+    if x_api_key and secrets.compare_digest(x_api_key, settings.api_key):
+        return
+    raise HTTPException(401, "인증 실패")
+```
+설정: `OIDC_AUDIENCE`(Cloud Run URL), `SCHEDULER_SA_EMAIL`. **함정**: verify 는 구글 공개키를
+HTTP 로 가져온다(내부 캐시 있음) — 네트워크 실패 시 401 이 아니라 500 나지 않게 try/except → 401.
+테스트: 목 claims 로 성공/이메일 불일치/만료 경로(monkeypatch `verify_oauth2_token`).
+
+### 3.4 PG advisory lock — 다중 인스턴스 틱 직렬화
+
+현행 asyncio.Lock 은 프로세스 내부용. Cloud Run 인스턴스가 2개 뜨면 무력 →
+`max_instance_count=1`(§3.2)이 1차 방어, advisory lock 이 정식 해법.
+
+**함정이 많다 — 정확히 이렇게**:
+```python
+# server/app/db/lock.py (신규)
+TICK_LOCK_KEY = 0x544F5353            # 임의 고정 상수("TOSS")
+
+@asynccontextmanager
+async def pg_tick_lock(engine) -> AsyncIterator[bool]:
+    """True = 락 획득. advisory lock 은 '커넥션'에 묶인다 — 같은 커넥션을 끝까지 유지해야 한다."""
+    if engine.dialect.name != "postgresql":
+        yield True                     # SQLite(로컬) — in-process asyncio.Lock 이 이미 직렬화
+        return
+    async with engine.connect() as conn:              # 풀에서 1개 점유, 블록 끝까지 유지
+        got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": TICK_LOCK_KEY})).scalar()
+        try:
+            yield bool(got)
+        finally:
+            if got:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": TICK_LOCK_KEY})
+```
+- **try(비블로킹)** 을 쓴다: 이미 도는 틱이 있으면 스킵(현행 asyncio 락과 같은 시맨틱).
+- unlock 을 **같은 conn** 에서 — 풀 반환 후 다른 커넥션으로 unlock 하면 실패한다.
+- 커넥션 끊기면 PG 가 자동 해제(크래시 안전).
+- 통합: `execute_tick` 의 asyncio 락 안쪽에서 `async with pg_tick_lock(app.state.db_engine) as got:`
+  → `not got` 이면 `{"skipped": "다른 인스턴스가 틱 실행 중"}`.
+- 테스트: SQLite 경로(항상 True), PG 는 통합환경 없으면 dialect 분기만 단위 테스트 + 문서화.
+
+### 3.5 알림 채널 (텔레그램)
+
+`server/app/core/notify.py` (신규):
+```python
+class Notifier(Protocol):
+    async def send(self, text: str) -> None: ...
+class NullNotifier: ...                                  # 미설정 시
+class TelegramNotifier:
+    # POST https://api.telegram.org/bot{token}/sendMessage  json={"chat_id":…, "text":…}
+    # timeout 5s. 실패는 log.warning 후 삼킨다 — 알림 실패가 틱을 죽이면 안 된다.
+```
+설정: `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID`. lifespan 에서 `app.state.notifier` 조립.
+
+**발화 지점과 전이 감지**(스팸 방지가 설계의 핵심):
+| 이벤트 | 감지 방법 | 중복 억제 |
+|---|---|---|
+| 서킷브레이커 발동/해제 | tick.py 에서 assess 전후 `tripped` 비교(**전이만**) | 전이 기반이라 불필요 |
+| 리컨실 불일치 | `report.ok == False` | discrepancy 목록의 `hash(frozenset(symbol,kind))` 를 메모리에 보관, 같은 해시는 60분 억제 |
+| 자동 틱 예외 | tick_loop except 블록 | 같은 예외 문자열 60분 억제 |
+| 킬스위치 변경 | kill-switch 라우트 + 리컨실 자동 발동부 | 전이 기반 |
+| LIVE 주문 제출/실패 | §4 에서 submit 결과 status 별 | 없음(전부 통지) |
+비밀·계좌번호를 메시지에 절대 포함하지 않는다. 테스트: 목 Notifier 로 전이/억제 로직.
+
+### 3.6 KRX 휴장일 캘린더
+
+- 데이터: `server/data/krx_holidays.json` — `{"2026": ["2026-01-01", "2026-01-28", …]}`.
+  출처는 KRX 공지(연 1회 수동 갱신 — fetch 자동화는 KRX OTP 절차가 번거로워 보류. 갱신 절차를
+  파일 헤더 주석에). **파일에 해당 연도가 없으면 경고 로그 + 평일=거래일 폴백**(조용한 실패 금지).
+- `app/core/calendar.py`: `load_holidays() -> frozenset[str]`, `is_trading_day(d: date, holidays) -> bool`.
+- 통합 2곳: `GuardrailConfig.holidays: frozenset[str]`(guard_market_hours 에서 `n.date().isoformat() in`
+  검사 추가) + `tick.py in_market_hours`. 설정 로드는 lifespan 1회.
+- 테스트: 휴일 주문 차단, 연도 누락 폴백, 평일 정상.
+
+### 3.7 CI + 구조화 로깅
+
+- `.github/workflows/ci.yml`: push/PR → `pip install -e ".[dev]"` → `ruff check app scripts tests`
+  → `pytest -q`. (배포 잡은 인프라 안정 후.)
+- 로깅: `LOG_FORMAT=json` 이면 stdlib `logging.Formatter` 를 JSON 포매터로 교체(자체 30줄 구현
+  — 의존성 추가 없이). 필드: ts·level·logger·message·tick_id(있으면). Cloud Logging 이 severity 를
+  집도록 `severity` 필드 포함.
+
+---
+
+## §4. P3 — LIVE 전환 (M3) — 페이퍼 평가 게이트(N≥100·유의성) 통과 후에만
+
+### 4.1 OrderService.submit 비동기 전환 (선행 리팩토링)
+
+토스 주문 전송은 async(httpx) — 현행 `submit` 은 sync 이고 executor Protocol 도 sync.
+**전환 절차(전 호출부)**:
+1. `OrderExecutor.place` → `async def place(self, order) -> str`. `CallableExecutor` 도 async fn 래핑.
+2. `OrderService.submit` → `async def`. 내부 `self._executor.place(order)` → `await`.
+3. 호출부 수정: [pipeline.py](server/app/engine/pipeline.py) 주문 루프 `order_service.submit(...)` → `await`.
+4. 테스트 수정: `tests/test_order_guardrails.py` 의 submit 호출 함수들을 `async def` 로(asyncio_mode
+   auto 라 데코레이터 불필요), `CallableExecutor(lambda…)` → async 람다 불가 → 헬퍼 `async def place(o)`.
+   `tests/test_pipeline.py`·`test_api.py`·`test_db.py` 는 run_tick 경유라 무변경.
+5. **불변식 재확인 테스트**: DRY_RUN 에서 executor 미호출(기존 `test_dry_run_never_calls_executor`)이
+   async 전환 후에도 통과해야 하며, 이 테스트를 깨는 어떤 우회도 금지(§0-4).
+
+### 4.2 주문 전송/조회/취소 클라이언트
+
+[TOSS-AI-TRADING-INSIGHTS.md](TOSS-AI-TRADING-INSIGHTS.md) §2.4 기준(구현 전 openapi.json 재대조 — §0-7):
+```python
+# TossClient 추가 메서드 (모두 account=True 헤더)
+async def place_order(self, body: dict) -> OrderAck:      # POST /orders — to_toss_body() 사용
+async def get_order(self, order_id: str) -> OrderInfo:    # GET /orders/{id} — 상태·체결 수량
+async def cancel_order(self, order_id: str) -> None:      # POST /orders/{id}/cancel (POST! 함정 4)
+```
+- **응답 모델은 실응답 확정 전 `extra="allow"` 원시에 가깝게** 두고, 첫 소액 주문의 실응답을
+  픽스처로 저장한 뒤 필드를 조인다(스모크 우선 — 단, 주문은 실자금이라 "스모크"가 곧 첫 파일럿.
+  절차: §4.6).
+- `TossOrderExecutor(client)` : `place()` 에서 `client.place_order(order.to_toss_body())`,
+  토스 orderId 반환. **재시도 금지**(멱등키가 있어도 전송 계층 재시도는 이중 주문 위험 —
+  타임아웃 시 상태 조회로 확인하는 §4.3 경로만 허용. `_send_with_retry` 의 RETRYABLE 에서
+  주문 POST 는 제외하는 플래그 필요 — `retryable=False` 파라미터).
+
+### 4.3 체결 추적(fills) — 리컨실 정밀화·실 P&L
+
+1. DB `fills(id, toss_order_id, client_order_id, symbol, side, filled_qty TEXT, fill_price TEXT,
+   fee TEXT, filled_at, raw_json TEXT)`.
+2. 틱 시작부(리컨실 전에!): 직전 미종결 주문(`orders.status == SUBMITTED` 이고 fills 미완결)을
+   `get_order` 로 폴링 → 체결분 fills 기록, 전량 체결/취소/만료면 orders.status 갱신
+   (`FILLED`/`CANCELLED` — OrderStatus enum 확장).
+3. **리컨실 개선**: `submitted_qty_since` → `filled_qty_since`(fills 기준). 미체결은 이제 기대에
+   포함되지 않으므로 부분체결 오탐 해소. 전환 스위치: fills 테이블 도입 후 리컨실 소스 교체.
+4. 일일 매수 사용액: LIVE 에선 submitted 기준 유지(보수 — 체결 전 노출도 예약으로 간주).
+   DRY_RUN 기록과의 혼산은 모드 필터(`orders.mode == 현재 모드`)로 정리 — **테스트**: 모드 전환일
+   시나리오(어제 DRY_RUN 기록이 오늘 LIVE 한도를 잠식하지 않는지, 같은 날 전환 시 보수 합산 유지).
+
+### 4.4 LIVE 성과 평가 (실 equity 곡선)
+
+페이퍼와 동일 파이프를 실계좌에: 틱마다 `실 equity = 예수금(buying_power) + Σ holdings 평가(KRW)`
+를 `paper_equity` 와 같은 스키마의 `live_equity` 테이블에 기록(벤치마크 동시).
+`/api/evaluation?source=live|paper`(기본 paper). n_trades 는 fills 의 SELL 완결 수.
+§1.3 입출금 왜곡이 여기도 적용 — TWR 정규화 전까지 입출금 시 수동 리셋 절차.
+
+### 4.5 롤아웃 절차 (기계적으로 따를 것)
+
+1. 페이퍼 게이트 확인: `/api/evaluation` — N≥100 · verdict "충족" · MDD 허용범위.
+2. 한도 축소: `PER_ORDER_MAX_KRW=30000 · DAILY_BUY_CAP_KRW=60000 · MAX_POSITIONS=3` 로 시작.
+3. `TRADING_MODE=LIVE` + `I_UNDERSTAND_LIVE_REAL_MONEY=YES` (process env — §1.1 로 DB 필수).
+4. **첫 주문은 장중 수동 감시** 하에 1건: 알림·orders/fills·리컨실(다음 틱 OK) 확인.
+   실응답 픽스처 저장 → 모델 필드 확정 커밋.
+5. 1주일 무사고(리컨실 OK·서킷브레이커 미발동) 후 한도 단계 상향. 사고 시 킬스위치 → 원인 분석
+   문서화 전 재개 금지.
+
+---
+
+## §5. P4 — 정교화(장기)
+
+- **TWR(시간가중수익률)**: 입출금 이벤트 테이블 → 곡선 정규화(§1.3 정석 해법).
+- **포트폴리오 관점 판단**: 후보별 독립 판단 → 후보 전체를 한 프롬프트로 랭킹(교차 비교).
+  트레이드오프: 토큰↑·스키마 복잡 vs 상대 비교 가능. 배치 스키마
+  `{"rankings":[{symbol, action, confidence, rationale}...]}` + 후보 수 상한 필수.
+- **confidence 계단 사이징**: §2.3 캘리브레이션 결과가 비단조면 `conf<0.6 → 0 · 0.6~0.8 → 0.5 ·
+  >0.8 → 1.0` 계단으로 교체(allocator 한 줄).
+- **해외주(USD) FX 정규화**: 서킷브레이커 equity·가드레일 한도가 KRW 버킷만 봄 — 환율 API 도입
+  전까지 **KR 전용 운용을 명시**(유니버스가 KRX 시드라 자연 충족. 실계좌에 USD 보유가 있으면
+  equity 과소평가 → HWM 왜곡 방향은 보수적이나, 리컨실은 심볼 단위라 무관).
+- 데스크톱 앱(Tauri) — M2 후. OpenAPI → openapi-typescript 타입 생성 플로우는 TECH-STACK §3.
+
+## §6. 우선순위 총괄
+
+| 순위 | 항목 | 근거 |
+|---|---|---|
+| **P0** | ✅ §1.1 LIVE-DB 강제 · ✅ §1.2 결정적 청산 (§1.3 은 LIVE 직전) | 극단 손실 방지 직결. §1.2 는 페이퍼 회전율(표본 축적)에도 필수 |
+| **P1** | §2.1 캔들 캐시 → §3.5 알림 → §2.3 캘리브레이션 → §2.2 ADV 선별 | 캐시는 429 리스크 즉시 제거. 알림은 무인 운용 전제조건 |
+| **P2** | §3.1–3.4·3.6·3.7 (배포 세트) | 페이퍼 데이터가 쌓이는 동안 병행 |
+| **P3** | §4 전체 (순서: 4.1→4.2→4.3→4.4→4.5) | 게이트 통과 후에만 |
+| **P4** | §2.4–2.6 · §5 | 표본이 충분해진 뒤 의미 |
