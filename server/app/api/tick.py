@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from fastapi import FastAPI
 
+from app.db.lock import pg_tick_lock
 from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.exits import ExitConfig, evaluate_exits
@@ -80,12 +81,19 @@ async def reconcile_and_enforce(
 
 
 async def execute_tick(app: FastAPI) -> dict:
-    """틱 1회 실행(전 조립). 동시 호출은 락으로 직렬화 — 진행 중이면 스킵 응답."""
+    """틱 1회 실행(전 조립). 동시 호출은 2단 직렬화 — 진행 중이면 스킵 응답.
+
+    바깥 asyncio 락 = 프로세스 내부, 안쪽 pg_tick_lock(§3.4) = 프로세스 경계
+    (다중 Cloud Run 인스턴스). SQLite/무DB 는 안쪽이 항상 통과(asyncio 락으로 충분).
+    """
     lock: asyncio.Lock = app.state.tick_lock
     if lock.locked():
         return {"skipped": "틱 실행 중 — 중복 호출 직렬화(스킵)"}
     async with lock:
-        return await _execute_tick_locked(app)
+        async with pg_tick_lock(app.state.db_engine) as got:
+            if not got:
+                return {"skipped": "다른 인스턴스가 틱 실행 중 — advisory lock 스킵"}
+            return await _execute_tick_locked(app)
 
 
 async def _execute_tick_locked(app: FastAPI) -> dict:

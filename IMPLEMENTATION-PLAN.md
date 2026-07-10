@@ -302,7 +302,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 | W1 ✅ | §3.7 하드닝(`APP_ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
 | W2 ✅ | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
 | W3 ✅ | §3.3 OIDC 검증 | 코드 |
-| W4 | §3.4 PG advisory lock | 코드 |
+| W4 ✅ | §3.4 PG advisory lock | 코드 |
 | W5 | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정) | 빌드 |
 | W6 | §3.2 Terraform + 시크릿 주입(운영자) + 배포 → **1단계 검증(토스 IP)** → Scheduler 활성화 | 인프라 |
 | W7 | §3.10 조사 캐시(LLM 비용 절감 — 권장) | 코드 |
@@ -390,7 +390,7 @@ async def require_tick_auth(request: Request, x_api_key: str | None = Header(def
 HTTP 로 가져온다(내부 캐시 있음) — 네트워크 실패 시 401 이 아니라 500 나지 않게 try/except → 401.
 테스트: 목 claims 로 성공/이메일 불일치/만료 경로(monkeypatch `verify_oauth2_token`).
 
-### 3.4 PG advisory lock — 다중 인스턴스 틱 직렬화
+### 3.4 ✅ PG advisory lock — 다중 인스턴스 틱 직렬화 (구현됨 — db/lock.py)
 
 현행 asyncio.Lock 은 프로세스 내부용. Cloud Run 인스턴스가 2개 뜨면 무력 →
 `max_instance_count=1`(§3.2)이 1차 방어, advisory lock 이 정식 해법.
