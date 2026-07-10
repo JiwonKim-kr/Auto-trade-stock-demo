@@ -91,6 +91,19 @@ class CircuitBreaker:
             )
         return "서킷브레이커 발동 — 신규 진입 중단 (" + ", ".join(parts) + ")" if parts else ""
 
+    def reset(self) -> None:
+        """수동 리셋(운영 도구 — PLAN §1.3): 입출금으로 왜곡된 HWM·래치를 초기화한다.
+
+        HWM 은 None 으로 — 정확한 현재 equity 를 여기서 알 필요 없이, 다음 assess 가
+        그 틱의 equity 를 새 고점으로 잡는다. 래치도 함께 해제하되 손실 조건이 여전하면
+        다음 assess 가 즉시 재발동한다(자기교정 — 리셋으로 실제 손실 국면을 가릴 수 없다).
+        """
+        self.high_water_mark = None
+        self.drawdown = Decimal(0)
+        self._drawdown_halt = False
+        self._daily_halt_date = None
+        self.reason = ""
+
     def snapshot(self) -> dict:
         """현황 노출용(데스크톱/상태 API)."""
         return {

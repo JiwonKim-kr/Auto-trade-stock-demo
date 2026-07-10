@@ -6,6 +6,7 @@
             GET  /api/buying-power            매수가능금액 프록시
             GET  /api/prices?symbols=A,B      현재가 프록시
             POST /api/kill-switch             킬스위치 토글
+            POST /api/circuit-breaker/reset   서킷브레이커 수동 리셋(입출금 왜곡 해소 — §1.3)
             GET  /api/orders                  주문 원장(의도/전송 결과)
             GET  /api/reconcile               리컨실 수동 점검(기준선 미이동 — DB 필요)
             GET  /api/evaluation              페이퍼 성과 평가(Sharpe/MDD/벤치마크·표본 게이트 — DB 필요)
@@ -100,6 +101,25 @@ async def kill_switch(
     await request.app.state.notifier.send(
         f"킬스위치 {'ON — 전 주문 차단' if svc.kill_switch else 'OFF — 재개'} (수동)")
     return {"kill_switch": svc.kill_switch}
+
+
+@api.post("/circuit-breaker/reset")
+async def circuit_breaker_reset(
+    request: Request, svc: OrderService = Depends(get_order_service)
+) -> dict:
+    """서킷브레이커 수동 리셋(§1.3) — 입출금으로 왜곡된 HWM·래치 초기화.
+
+    손실 조건이 여전하면 다음 틱 assess 가 즉시 재발동한다(리셋이 실손실을 가리지 못함).
+    """
+    before = svc.circuit_breaker.snapshot()
+    svc.circuit_breaker.reset()
+    repo = request.app.state.repo
+    if repo is not None:  # 재시작 생존 + 감사
+        await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
+        await repo.audit("api", "circuit_breaker_reset", {"before": before})
+    await request.app.state.notifier.send(
+        "서킷브레이커 수동 리셋 — HWM·래치 초기화(다음 틱 재평가)")
+    return {"circuit_breaker": svc.circuit_breaker.snapshot(), "before": before}
 
 
 @api.get("/orders")

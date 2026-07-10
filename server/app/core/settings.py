@@ -15,6 +15,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
+    # 배포 환경 판별 — "production" 이면 하드닝 활성(§3.7: /docs 차단·기본 API키 기동 거부)
+    app_env: str = "local"
+
     # 데스크톱 ↔ 서버 인증 (운영 전 반드시 변경)
     api_key: str = "dev-local-key"
 

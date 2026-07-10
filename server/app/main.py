@@ -32,6 +32,12 @@ logger = logging.getLogger("app")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # 하드닝(§3.7): 운영에서 기본 API 키는 문서화된 값 = 사실상 무인증 → 강등이 아니라 기동 거부
+    # (조용한 노출이 더 위험 — §1.1 LIVE-DB 강등과 달리 안전한 폴백이 존재하지 않는다)
+    if settings.app_env == "production" and settings.api_key == "dev-local-key":
+        raise RuntimeError(
+            "APP_ENV=production 인데 API_KEY 가 기본값(dev-local-key) — 기동 거부. "
+            "Secret Manager 등으로 API_KEY 를 주입하라 (IMPLEMENTATION-PLAN §3.7)")
     mode, warnings = load_trading_mode()
     for w in warnings:
         logger.warning(w)
@@ -132,7 +138,12 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="토스 AI 자동매매 서버", version="0.1.0", lifespan=lifespan)
+    # 하드닝(§3.7): 운영에선 /docs·/openapi.json 무인증 노출 차단(라우트 맵·헤더명 정찰 방지)
+    production = get_settings().app_env == "production"
+    app = FastAPI(title="토스 AI 자동매매 서버", version="0.1.0", lifespan=lifespan,
+                  docs_url=None if production else "/docs",
+                  redoc_url=None if production else "/redoc",
+                  openapi_url=None if production else "/openapi.json")
     app.include_router(router)
     return app
 

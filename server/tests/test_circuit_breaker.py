@@ -96,3 +96,25 @@ def test_dump_restore_empty_state_noop():
     b = cb()
     b.restore_state({})                                        # 빈 상태(첫 기동) 안전
     assert b.tripped is False and b.high_water_mark is None
+
+
+# ── 수동 리셋 (§1.3 — 입출금 왜곡 해소 + 원격 래치 해제) ─────────────────────────
+def test_manual_reset_clears_hwm_and_latches():
+    b = cb()
+    b.assess(Decimal("1000"), Decimal("0"), D1)                # HWM 1000
+    b.assess(Decimal("800"), Decimal("0"), D1)                 # 낙폭 -20% → 래치
+    assert b.tripped is True
+    b.reset()
+    assert b.tripped is False
+    assert b.high_water_mark is None and b.drawdown == Decimal(0)
+    # 다음 assess 가 현재 equity 를 새 고점으로(입출금 후 기준 재설정 시맨틱)
+    assert b.assess(Decimal("800"), Decimal("0"), D1) is False
+    assert b.high_water_mark == Decimal("800")
+
+
+def test_manual_reset_cannot_hide_ongoing_daily_loss():
+    b = cb()
+    b.assess(Decimal("1000"), Decimal("-0.06"), D1)            # 일일 손실 래치
+    b.reset()
+    assert b.tripped is False                                  # 리셋 직후엔 해제되지만
+    assert b.assess(Decimal("1000"), Decimal("-0.06"), D1_LATE) is True   # 조건 여전 → 즉시 재발동

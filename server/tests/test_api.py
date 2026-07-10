@@ -140,6 +140,63 @@ def test_live_with_db_stays_live(monkeypatch, tmp_path):
         get_settings.cache_clear()          # 다른 테스트가 깨끗한 설정을 읽도록
 
 
+# ── P2 §3.7 하드닝 + §1.3 서킷브레이커 수동 리셋 ──────────────────────────────
+def test_production_refuses_default_api_key(monkeypatch):
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("APP_ENV", "production")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with pytest.raises(RuntimeError, match="API_KEY"):
+            with TestClient(app):
+                pass
+    finally:
+        get_settings.cache_clear()
+
+
+def test_production_hides_docs(monkeypatch):
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("API_KEY", "prod-strong-key")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with TestClient(app) as c:
+            assert c.get("/docs").status_code == 404
+            assert c.get("/openapi.json").status_code == 404
+            assert c.get("/health").status_code == 200      # 헬스체크는 유지
+    finally:
+        get_settings.cache_clear()
+
+
+def test_local_keeps_docs(client):
+    assert client.get("/docs").status_code == 200
+
+
+def test_circuit_breaker_reset_route(monkeypatch, tmp_path):
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/cb.db")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with TestClient(app) as c:
+            b = app.state.order_service.circuit_breaker
+            b.assess(Decimal("100000"), None, OPEN_KST)     # HWM
+            b.assess(Decimal("80000"), None, OPEN_KST)      # 낙폭 -20% → 래치
+            assert b.tripped is True
+
+            r = c.post("/api/circuit-breaker/reset", headers=KEY)
+            assert r.status_code == 200
+            assert r.json()["before"]["tripped"] is True
+            assert r.json()["circuit_breaker"]["tripped"] is False
+            assert b.high_water_mark is None                # 다음 틱이 새 고점 설정
+    finally:
+        get_settings.cache_clear()
+
+
 def test_context_from_holdings():
     h = Holdings.model_validate(fx("holdings.json"))
     ctx = context_from_holdings(h, OPEN_KST)

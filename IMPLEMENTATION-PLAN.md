@@ -102,7 +102,7 @@
    (같은 날 여러 틱 = 1거래일), (d) 강제 SELL 이 LLM 을 우회하고 주문 생성, (e) 킬스위치 시 REJECTED
    (킬스위치는 매도도 막음 — 의도), (f) opened_at None 하위호환.
 
-### 1.3 입출금 ↔ 서킷브레이커 왜곡 (LIVE 시 운영 절차)
+### 1.3 ✅ 입출금 ↔ 서킷브레이커 왜곡 (경량 구현됨 — reset 엔드포인트. TWR 정석은 P4)
 
 **문제(점검 발견)**: 서킷브레이커 HWM/낙폭은 자기자본 절대값 기준. LIVE 에서 **예수금 입금 → HWM
 상향 → 직후 출금 → 낙폭 오탐**(반대로 입금이 실제 손실을 가릴 수도). 페이퍼는 폐쇄계라 무관.
@@ -268,7 +268,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 | 4 | 틱 소요시간(조사 ≤5콜 + 판단 ≤10콜 직렬 = 수 분) > Scheduler 기본 deadline 3분 | `attempt_deadline=900s` · Cloud Run timeout 900s · `retry_count=0`(다음 파이어가 커버, 중복은 락) |
 | 5 | 콜드 스타트 시 엔진 상태 | **이미 대응됨** — 킬스위치·CB 래치·원장·캔들 캐시 전부 DB 복원 설계 |
 | 6 | 토스 API 가 데이터센터 IP 를 차단할 가능성(미확인 — BASIC tier 문서에 명시 없음) | 서울 리전 + **배포 직후 1단계 검증**(§3.2 말미): 토스 인증·조회 성공 확인 후에만 Scheduler 활성화 |
-| 7 | `ENV=production` 판별 부재(§3.7 하드닝·경로 분기의 전제) | §3.7 과 함께 `ENV` 설정 도입 |
+| 7 | `APP_ENV=production` 판별 부재(§3.7 하드닝·경로 분기의 전제) | §3.7 과 함께 `APP_ENV` 설정 도입(POSIX `ENV` 예약어 회피) |
 
 **예상 비용 (월, asia-northeast3 — 2026-07 단가 기준 추정치, 청구 전 콘솔 재확인)**:
 
@@ -299,7 +299,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 
 | 순번 | 내용 | 성격 |
 |---|---|---|
-| W1 | §3.7 하드닝(`ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
+| W1 ✅ | §3.7 하드닝(`APP_ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
 | W2 | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
 | W3 | §3.3 OIDC 검증 | 코드 |
 | W4 | §3.4 PG advisory lock | 코드 |
@@ -345,7 +345,7 @@ scripts 는 이미지에 불필요(진단은 로컬). **주의**: `.env` 류가 
 | `google_artifact_registry_repository` | `asia-northeast3`, docker | |
 | `google_secret_manager_secret` ×6 | TOSS_CLIENT_ID/SECRET · ANTHROPIC_API_KEY · API_KEY · DATABASE_URL · NOTIFY_TELEGRAM_BOT_TOKEN | 값은 TF 밖에서 주입(`gcloud secrets versions add`) — state 에 비밀 금지. chat_id 는 평문 env 가능 |
 | `google_sql_database_instance` — **스텁**(`var.enable_cloud_sql=false`, 기본 미생성) | 전환 대비만: PG16, `asia-northeast3`, db-f1-micro 급, 삭제 보호 on | DB 는 Supabase(§3.0 결정). 전환 = 변수 토글 + DATABASE_URL 시크릿 교체 |
-| `google_cloud_run_v2_service` | env: secret refs + `ENV=production`·`REPORTS_DIR=/tmp/reports`·`TICK_INTERVAL_SEC=0`. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치), **timeout 900s**(틱이 수 분 — §3.0-4) | DB 연결: DATABASE_URL 시크릿 직결(Supabase 세션 풀러 — §3.0 함정 참조). Cloud SQL 전환 시 `run.googleapis.com/cloudsql-instances` annotation + unix socket 으로 교체. **`--no-allow-unauthenticated`** — 플랫폼 IAM 이 1차 방벽(invoker = scheduler-sa + 운영자 계정만), 앱 인증(OIDC/API키)은 2차 |
+| `google_cloud_run_v2_service` | env: secret refs + `APP_ENV=production`·`REPORTS_DIR=/tmp/reports`·`TICK_INTERVAL_SEC=0`. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치), **timeout 900s**(틱이 수 분 — §3.0-4) | DB 연결: DATABASE_URL 시크릿 직결(Supabase 세션 풀러 — §3.0 함정 참조). Cloud SQL 전환 시 `run.googleapis.com/cloudsql-instances` annotation + unix socket 으로 교체. **`--no-allow-unauthenticated`** — 플랫폼 IAM 이 1차 방벽(invoker = scheduler-sa + 운영자 계정만), 앱 인증(OIDC/API키)은 2차 |
 | `google_service_account` ×2 | run-sa(Secret accessor·SQL client), scheduler-sa(run invoker) | 최소 권한 |
 | `google_cloud_scheduler_job` ×2 | ① tick `*/5 9-15 * * 1-5` ② report `30 16 * * *` — 둘 다 **`time_zone="Asia/Seoul"`**(UTC 환산 불필요·오프바이원 예방), HTTP POST + **OIDC token**(scheduler-sa, audience=run_url) | **`attempt_deadline="900s"`**(기본 3분이면 틱 도중 잘림)·`retry_count=0`(다음 파이어가 커버 — 재시도는 중복 파이어만 만든다, 락이 직렬화하지만 무의미). 15:30 초과분·휴장일은 서버가 거른다(§3.6) |
 
@@ -456,17 +456,17 @@ class TelegramNotifier:
   검사 추가) + `tick.py in_market_hours`. 설정 로드는 lifespan 1회.
 - 테스트: 휴일 주문 차단, 연도 누락 폴백, 평일 정상.
 
-### 3.7 보안 하드닝 (보안 점검 2026-07-10 정보성 노트 — 배포 전 필수)
+### 3.7 ✅ 보안 하드닝 (구현됨 — APP_ENV=production 시 docs 차단·기본 API키 기동 거부)
 
 점검 결과 HIGH/MEDIUM 0건. 아래 2건은 로컬(127.0.0.1)에선 무해하나 **Cloud Run 배포 시 필수**:
 
 1. **`/docs`·`/openapi.json` 무인증 노출 차단** — FastAPI 기본값이 라우트 맵(킬스위치 경로·
    `X-API-Key` 헤더명 포함)을 무인증 열람 허용. 운영에선 정찰 보조.
-   구현: `create_app()` 에서 운영 판별(예: `ENV=production` 설정) 시
+   구현: `create_app()` 에서 운영 판별(`APP_ENV=production` 설정) 시
    `FastAPI(docs_url=None, redoc_url=None, openapi_url=None)`. 로컬 기본은 유지(개발 편의).
 2. **기본 `API_KEY="dev-local-key"` 기동 거부(fail-closed)** — 현재 경고만 내고 구동됨.
    배포에서 `API_KEY` 설정 누락 시 문서화된 기본값으로 킬스위치 해제·보유 조회 가능해지는 클래스.
-   구현: lifespan 에서 `ENV=production AND api_key == "dev-local-key"` → RuntimeError 로 기동 중단
+   구현: lifespan 에서 `APP_ENV=production AND api_key == "dev-local-key"` → RuntimeError 로 기동 중단
    (§1.1 LIVE-DB 강등과 같은 철학 — 단, 이번엔 강등이 아니라 거부: 조용한 노출이 더 위험).
    테스트: production+기본키 → 기동 실패, 로컬+기본키 → 경고만.
 
