@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     # 배포 환경 판별 — "production" 이면 하드닝 활성(§3.7: /docs 차단·기본 API키 기동 거부)
     app_env: str = "local"
+    # "json" 이면 한 줄 JSON 로깅(§3.8 — Cloud Logging severity). 로컬 기본 text
+    log_format: str = "text"
 
     # 데스크톱 ↔ 서버 인증 (운영 전 반드시 변경)
     api_key: str = "dev-local-key"

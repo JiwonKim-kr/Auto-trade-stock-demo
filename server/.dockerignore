@@ -1,0 +1,17 @@
+# 이미지 불필요 + 비밀 차단 (PLAN §3.1 — .env 류가 절대 이미지에 들어가지 않게)
+.venv/
+tests/
+scripts/
+reports/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+*.db
+*.sqlite
+.env
+**/.env*
+Dockerfile
+.dockerignore

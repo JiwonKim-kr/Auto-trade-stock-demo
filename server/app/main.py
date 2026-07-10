@@ -16,6 +16,7 @@ from app.api.routes import router
 from app.api.tick import tick_loop
 from app.core.calendar import load_holidays
 from app.core.config import load_trading_mode
+from app.core.logging_setup import setup_json_logging
 from app.core.notify import AlertGate, NullNotifier, TelegramNotifier
 from app.core.settings import get_settings
 from app.db.repo import Repository
@@ -138,8 +139,11 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
+    if settings.log_format == "json":     # Cloud Logging 용 구조화 로깅(§3.8)
+        setup_json_logging()
     # 하드닝(§3.7): 운영에선 /docs·/openapi.json 무인증 노출 차단(라우트 맵·헤더명 정찰 방지)
-    production = get_settings().app_env == "production"
+    production = settings.app_env == "production"
     app = FastAPI(title="토스 AI 자동매매 서버", version="0.1.0", lifespan=lifespan,
                   docs_url=None if production else "/docs",
                   redoc_url=None if production else "/redoc",

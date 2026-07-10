@@ -1,0 +1,28 @@
+# CI (PLAN §3.8) — 린트 + 테스트. 파이썬은 배포 이미지(§3.1)와 동일한 3.12 로 고정
+# (로컬 3.14 와의 차이를 CI 가 조기 검출). 배포 잡은 인프라 안정 후 별도 추가.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check app scripts tests
+      - name: Test (pytest)
+        run: pytest -q
