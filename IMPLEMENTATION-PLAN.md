@@ -357,7 +357,7 @@ class TelegramNotifier:
 | LIVE 주문 제출/실패 | §4 에서 submit 결과 status 별 | 없음(전부 통지) |
 비밀·계좌번호를 메시지에 절대 포함하지 않는다. 테스트: 목 Notifier 로 전이/억제 로직.
 
-### 3.6 KRX 휴장일 캘린더
+### 3.6 ✅ KRX 휴장일 캘린더 — 구현됨(2026 목록은 KRX 공지 검증 필요)
 
 - 데이터: `server/data/krx_holidays.json` — `{"2026": ["2026-01-01", "2026-01-28", …]}`.
   출처는 KRX 공지(연 1회 수동 갱신 — fetch 자동화는 KRX OTP 절차가 번거로워 보류. 갱신 절차를
@@ -466,7 +466,7 @@ async def cancel_order(self, order_id: str) -> None:      # POST /orders/{id}/ca
 
 ## §7. 검토 완료 제안 — 샌드박스 시뮬레이션 · 휴장일 자동 보고서
 
-### 7.1 토스 API 없는 샌드박스 시뮬레이션 — **가능(2단 구성)**, 단 LLM 알파 소급 평가는 불가
+### 7.1 ✅ 토스 API 없는 샌드박스 시뮬레이션 — 구현됨(stress_sim·backtest), LLM 알파 소급 평가는 불가
 
 **구조적 근거**: 파이프라인은 이미 완전 주입형이다 — `run_tick(toss=…)` 은 덕타이핑(테스트의
 FakeToss 가 증명), 페이퍼 모드는 holdings/현금을 합성으로 대체하며, `now` 도 파라미터다.
@@ -496,7 +496,7 @@ FakeToss 가 증명), 페이퍼 모드는 holdings/현금을 합성으로 대체
   3. 체결 현실성 — §2.4 미체결 모형과 동일 가정 한계.
 - 노력: 중(데이터 적재 스크립트 + ReplayToss + 드라이버 + 규율 테스트).
 
-### 7.2 휴장일 자동 보고서 — **가능(재료 전부 보유)**, 노력 소~중
+### 7.2 ✅ 휴장일 자동 보고서 — 구현됨(engine/report + /internal/report + 루프 트리거)
 
 **데이터는 이미 전부 DB에 있다**: ticks(레짐·차단 내역)·decisions(rationale·판단가)·orders·
 paper_equity(곡선·벤치마크)·audit_log(안전 이벤트)·symbol_stats. 평가/캘리브레이션 함수도 재사용.
