@@ -59,6 +59,7 @@ ANTHROPIC_API_KEY=sk-ant-...          # 선택(없으면 결정적 폴백)
 순서대로 한 번씩. 전부 통과하면 환경이 완성된 것이다.
 
 ```powershell
+server/.venv/Scripts/python server/scripts/stress_sim.py         # ⓪ 안전장치 체인(자격증명 불필요)
 python server/scripts/toss_smoke.py                              # ① 토스 연결·accountSeq 판별
 server/.venv/Scripts/python server/scripts/live_check.py         # ② 운영 클라이언트 점검
 server/.venv/Scripts/python server/scripts/llm_live_check.py     # ③ LLM 실가동(키 있을 때, 유료·소액)
@@ -74,11 +75,15 @@ server/.venv/Scripts/python server/scripts/run_local.py          # 기본 포트
 런처가 하는 일: `scripts/.env` → process env 로드 → 작업폴더를 `server/` 로 고정
 (`trading.db` 위치 일관) → uvicorn 구동. 이후는 자동이다:
 
-- **장중(KST 평일 09:00–15:30)에만** `TICK_INTERVAL_SEC` 간격으로 틱이 돈다. 장외엔 대기(LLM 비용 0).
-- 틱마다: KRX 2,655종목 **코호트 로테이션**(40개씩 순환) → 스크리너 → (조사→LLM 판단 또는 폴백)
-  → 비용 게이트·레짐 필터 → **페이퍼 체결**(실주문 0) → DB 기록.
+- **장중(KST 평일 09:00–15:30, 공휴일 제외)에만** `TICK_INTERVAL_SEC` 간격으로 틱이 돈다. 장외엔 대기(LLM 비용 0).
+- 틱마다: KRX 2,655종목 **2단계 선정**(ADV 상위 풀 활용 + 미측정 탐색, 콜드스타트는 로테이션)
+  → 스크리너 → (조사→LLM 판단 또는 폴백) → 비용 게이트·레짐 필터 → **결정적 청산(손절·타임스톱)**
+  → **페이퍼 체결**(실주문 0) → DB 기록. 캔들은 60분 TTL 캐시(429 방어).
 - 페이퍼 장부(초기 자본 `PAPER_SEED_KRW`, 기본 1천만)가 LLM 의 '보유'가 되어 매도까지 평가된다.
 - 킬스위치·서킷브레이커·페이퍼 장부는 **재시작해도 DB 에서 복원**된다. 그냥 껐다 켜도 된다.
+- **휴장일(주말·공휴일)엔 자동 보고서**가 `reports/report-{날짜}.md` 로 생성되고 텔레그램 요약이 온다.
+- 텔레그램(`NOTIFY_TELEGRAM_BOT_TOKEN`/`CHAT_ID` 설정 시): 서킷브레이커 발동/해제·리컨실 불일치·
+  자동 틱 실패·킬스위치 변경이 push 된다(같은 경보는 60분 1회).
 
 ## 6. 모니터링 · 제어 (API)
 
@@ -98,6 +103,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 | `GET /api/holdings` · `/api/buying-power` · `/api/prices?symbols=` | 토스 프록시 |
 | `POST /api/kill-switch` `{"engaged":true|false}` | 전 주문 수동 차단/해제(재시작 생존) |
 | `POST /internal/tick` | 틱 수동 1회(자동 루프와 중복 시 직렬화 — 스킵 응답) |
+| `POST /internal/report` | 운용 보고서 수동 생성(자동은 휴장일 1회) |
 
 **`/api/evaluation` 읽는 법**: 완결 트레이드 **N<100 동안 "판단 보류"가 정상**이다(운/실력 구분
 불가 — study 규율). 수 주간 곡선을 쌓은 뒤 Sharpe·벤치마크 대비를 본다. LIVE 전환의 게이트.
@@ -124,6 +130,12 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 - **페이퍼 리셋**(실험 다시 시작): 서버 끄고 `trading.db` 삭제 — 다음 기동 때 seed 로 재초기화.
   (틱/주문 이력도 함께 사라지니 보존하려면 파일 백업 후 삭제.)
 - **KRX 시드 갱신**(상장/상폐 반영, 월 1회 권장): `python server/scripts/fetch_krx_symbols.py`
+- **휴장일 갱신**(연 1회, KRX 공지 기준): `server/data/krx_holidays.json` — ⚠️ 2026 목록은 예상치
+  포함이니 **KRX 공지로 검증** 후 운용. 연도 미등재는 경고 후 평일=거래일 폴백.
+- **보고서**: `server/reports/`(gitignore 아님 — 필요 시 정리). **백테스트 데이터**: `data/history/`
+  (`fetch_history.py` 로 적재, 리플레이 전용).
+- **분석 도구**: `calibration_report.py`(confidence 캘리브레이션) · `backtest.py`(리플레이) ·
+  `stress_sim.py`(안전장치 검증) — 모두 읽기 전용.
 
 ## 9. 문제 해결
 
@@ -137,7 +149,25 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 | 틱 응답 `skipped` | 이전 틱 진행 중(직렬화) — 정상. 다음 주기에 실행됨 |
 | 평가가 계속 "판단 보류" | 완결 트레이드 N<100 — 정상. 곡선이 쌓일 시간이 필요 |
 
-## 10. ⚠️ LIVE 전환에 관하여 (지금은 불가)
+## 10. 라이브 테스트(페이퍼 운용 개시) 체크리스트
+
+실계좌 데이터 위에서 시스템을 상시 구동하되 **실주문 0**(DRY_RUN+페이퍼)인 단계. 순서대로:
+
+- [ ] `pytest -q` 통과 + `stress_sim.py` ✅ (코드 무결성·안전장치)
+- [ ] `scripts/.env`: 토스 자격증명 + 상시 운용 4종(`DATABASE_URL`·`SYMBOL_SOURCE_PATH`·
+      `TICK_INTERVAL_SEC=300`·`ANTHROPIC_API_KEY`) — §3 참조
+- [ ] `llm_live_check.py` — LLM 경로 최초 실검증(키 필요, 유료·소액). **키 없이 시작해도 됨**
+      (결정적 폴백으로 베이스라인 데이터 축적 — LLM 대비 비교군으로도 가치)
+- [ ] 텔레그램 봇 생성(@BotFather) → `NOTIFY_TELEGRAM_BOT_TOKEN`/`CHAT_ID` — 무인 운용 전제조건
+- [ ] `data/krx_holidays.json` 2026 목록을 KRX 공지로 검증
+- [ ] `run_local.py` 기동 → `/api/status` 에서 `toss_connected: true`·`persistence: true` 확인
+- [ ] 장중 첫 자동 틱 후: `/api/status`(서킷브레이커)·`GET /api/evaluation`·텔레그램 수신 확인
+- [ ] 이후는 방치 — 휴장일 보고서와 알림이 관측 채널. **N≥100 쌓일 때까지 "판단 보류"가 정상**
+
+운용 중 개입이 필요할 때: 킬스위치(`POST /api/kill-switch`) · 수동 리컨실(`GET /api/reconcile`)
+· 수동 보고서(`POST /internal/report`).
+
+## 11. ⚠️ LIVE 전환에 관하여 (지금은 불가)
 
 `TRADING_MODE=LIVE` + `I_UNDERSTAND_LIVE_REAL_MONEY=YES` 를 **process env** 로 줘야 LIVE 가
 되지만(파일만으론 안 됨 — 의도된 마찰), **주문 전송 executor 가 아직 없어** LIVE 로 켜도 주문은
