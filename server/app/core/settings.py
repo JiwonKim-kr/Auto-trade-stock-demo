@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # (상한 도달 시 그날은 결정적 폴백으로 강등 — DB 필요, 근사 카운트)
     judge_top_n: int = 10
     daily_llm_decision_cap: int = 400
+    # 조사(web_search) 캐시 TTL(분, §3.10) — 조사가 LLM 비용 지배 항목. 0=비활성(DB 필요).
+    # 보유 종목은 매도 판단의 뉴스 신선도가 중요 → 별도의 짧은 TTL
+    research_cache_ttl_minutes: int = 1440
+    research_cache_held_ttl_minutes: int = 120
 
     # 내장 틱 루프(초). 0=비활성(운영은 Cloud Scheduler 가 /internal/tick 호출).
     # 로컬 상시 운용: 예 300 → 장중(KST 평일 09:00–15:30)에만 자동 틱.

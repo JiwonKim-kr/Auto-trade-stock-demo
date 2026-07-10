@@ -305,7 +305,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 | W4 ✅ | §3.4 PG advisory lock | 코드 |
 | W5 ✅ | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정)·JSON 로깅 | 빌드 |
 | W6 🔶 | §3.2 Terraform **작성 완료** — apply·시크릿 주입·배포·**1단계 검증(토스 IP)**·Scheduler 활성화는 운영자([infra/README.md](infra/README.md) 절차) | 인프라 |
-| W7 | §3.10 조사 캐시(LLM 비용 절감 — 권장) | 코드 |
+| W7 ✅ | §3.10 조사 캐시(LLM 비용 절감 — 권장) | 코드 |
 
 운영자 준비물(W6 전): GCP 프로젝트+결제 계정, `gcloud` CLI 인증, **Supabase 무료 프로젝트
 생성(리전 서울)**, 시크릿 값 6종(토스 2·Anthropic·API_KEY·DATABASE_URL(Supabase 세션 풀러)·
@@ -498,7 +498,7 @@ class TelegramNotifier:
 5. **테스트**: body 왕복, 파일 저장 실패에도 성공(reports_dir 를 파일로 막아 강제),
    force=false 가 거래일 no-op/휴장일 생성, force=true 하위호환.
 
-### 3.10 조사(web_search) 결과 TTL 캐시 — LLM 비용 지배 항목 절감 (권장)
+### 3.10 ✅ 조사(web_search) 결과 TTL 캐시 — LLM 비용 지배 항목 절감 (구현됨)
 
 **문제(§3.0 비용표)**: 조사는 심볼당 **매 틱** 재실행될 수 있다 — 최대 5콜/틱 × 78틱 = 390콜/일.
 web_search 단가 + 검색결과 토큰(콜당 수천)이 전체 LLM 비용의 지배 항목. 일봉 전략에서 같은

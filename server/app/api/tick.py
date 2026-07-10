@@ -26,7 +26,7 @@ from app.engine.llm import ClaudeJudge
 from app.engine.paper import PaperPortfolio
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.regime import RegimeConfig
-from app.engine.research import WebSearchResearch
+from app.engine.research import CachingResearch, WebSearchResearch
 from app.engine.symbols import FileSymbolSource, resolve_universe
 from app.orders.guardrails import KST
 from app.orders.models import OrderStatus, TradingMode
@@ -140,6 +140,13 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
     else:
         judge, research = DeterministicJudge(), None
         engine = "ANTHROPIC_API_KEY 미설정 → 결정적 폴백(주문 데모용)"
+
+    # 조사 캐시(§3.10): 심볼당 TTL — web_search 비용 절감(판단 프롬프트에 수집 시각 표기)
+    if research is not None and repo is not None and settings.research_cache_ttl_minutes > 0:
+        research = CachingResearch(
+            research, repo,
+            ttl_minutes=settings.research_cache_ttl_minutes,
+            held_ttl_minutes=settings.research_cache_held_ttl_minutes)
 
     entry_gate = EntryGate(
         CostConfig(

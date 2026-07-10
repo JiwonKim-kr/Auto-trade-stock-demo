@@ -12,9 +12,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from app.engine.llm import CandidateContext, ResearchNote
+
+_KST = timezone(timedelta(hours=9))
 
 RESEARCH_SYSTEM = """당신은 한국 주식 리서치 보조자다. 주어진 종목에 대해 웹에서 최신 정보를 검색해
 (최근 뉴스·공시·실적·이벤트·업종 동향) 매매 판단에 쓸 **사실 위주의 간결한 한국어 브리프**를 작성한다.
@@ -105,6 +108,37 @@ class WebSearchResearch:
 
         summary = _collect_text(resp) or "특이사항 없음"
         return ResearchNote(symbol=ctx.symbol, summary=summary, sources=_collect_sources(resp))
+
+
+class CachingResearch:
+    """provider 래퍼 — 심볼당 TTL 캐시(DB, §3.10). 조립은 경계(tick.py — §0-6).
+
+    web_search 는 콜당 검색 비용 + 결과 토큰이 커서 LLM 비용의 지배 항목인데, 일봉 전략에서
+    같은 심볼을 하루 여러 번 조사할 정보 가치는 낮다. 보유 종목은 매도 판단에 뉴스 신선도가
+    중요하므로 별도의 짧은 TTL. 캐시 반환 시 수집 시각을 브리프 앞에 표기해
+    판단 LLM 이 신선도를 알게 한다. 빈 노트(조사 실패/비활성)는 캐시하지 않는다.
+    """
+
+    def __init__(self, inner: ResearchProvider, repo, *,
+                 ttl_minutes: int = 1440, held_ttl_minutes: int = 120):
+        self._inner = inner
+        self._repo = repo
+        self._ttl = timedelta(minutes=ttl_minutes)
+        self._held_ttl = timedelta(minutes=held_ttl_minutes)
+
+    async def research(self, ctx: CandidateContext) -> ResearchNote:
+        cached = await self._repo.get_cached_research(ctx.symbol)
+        if cached is not None:
+            fetched_at, summary, sources = cached
+            ttl = self._held_ttl if ctx.already_held else self._ttl
+            if datetime.now(timezone.utc) - fetched_at < ttl:
+                stamp = fetched_at.astimezone(_KST).strftime("%m-%d %H:%M")
+                return ResearchNote(symbol=ctx.symbol, sources=sources,
+                                    summary=f"[캐시된 조사 — {stamp} KST 수집] {summary}")
+        note = await self._inner.research(ctx)
+        if note.summary:
+            await self._repo.save_cached_research(ctx.symbol, note.summary, note.sources)
+        return note
 
 
 async def research_candidates(

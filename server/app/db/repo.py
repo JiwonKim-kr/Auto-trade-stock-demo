@@ -31,6 +31,7 @@ from app.db.models import (
     PaperStateRow,
     PositionRow,
     PositionSnapshotRow,
+    ResearchCacheRow,
     ReportLogRow,
     SymbolStatsRow,
     TickRow,
@@ -310,6 +311,25 @@ class Repository:
                 row = CandleCacheRow(symbol=symbol, interval=interval)
                 s.add(row)
             row.payload_json = json.dumps(payload, ensure_ascii=False)
+            row.fetched_at = datetime.now(timezone.utc)
+
+    # ── 조사 캐시 (§3.10 — web_search 비용 절감) ────────────────────────────────
+    async def get_cached_research(self, symbol: str) -> tuple[datetime, str, list[str]] | None:
+        """(fetched_at UTC, summary, sources) 또는 None."""
+        async with self._sm() as s:
+            row = await s.get(ResearchCacheRow, symbol)
+        if row is None:
+            return None
+        return _utc(row.fetched_at), row.summary, json.loads(row.sources_json)
+
+    async def save_cached_research(self, symbol: str, summary: str, sources: list[str]) -> None:
+        async with self._sm() as s, s.begin():
+            row = await s.get(ResearchCacheRow, symbol)
+            if row is None:
+                row = ResearchCacheRow(symbol=symbol)
+                s.add(row)
+            row.summary = summary
+            row.sources_json = json.dumps(sources, ensure_ascii=False)
             row.fetched_at = datetime.now(timezone.utc)
 
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────

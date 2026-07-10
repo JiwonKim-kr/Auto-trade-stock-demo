@@ -186,6 +186,17 @@ class CandleCacheRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class ResearchCacheRow(Base):
+    """조사(web_search) 결과 TTL 캐시(§3.10) — 조사가 LLM 비용 지배 항목이라 심볼당 재사용."""
+
+    __tablename__ = "research_cache"
+
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    summary: Mapped[str] = mapped_column(Text)
+    sources_json: Mapped[str] = mapped_column(Text)      # ["https://…", …]
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ReportLogRow(Base):
     """휴장일 자동 보고서 이력 — 중복 생성 방지 마커 + 본문(§3.9: DB 가 정본).
 
