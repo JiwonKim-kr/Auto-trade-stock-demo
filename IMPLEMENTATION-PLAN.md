@@ -245,6 +245,72 @@ class CachingToss:
 
 ## §3. P2 — 클라우드 자율 운용 (M2)
 
+### 3.0 M2 재검토 결과 (2026-07-11) — 아키텍처·격차·비용·구현 순서
+
+> 배경: 로컬 상시 가동이 불가한 상황 확정 → **페이퍼 운용 자체를 M2(클라우드)에서 개시**하는
+> 것으로 순서 변경. 아래는 §3.1–3.8 원안을 배포 직전 시점에서 재검토한 결과.
+
+**최종 아키텍처** (asia-northeast3 — 서울. 국내 증권사 API 의 해외 IP 차단 관행 대비):
+```
+Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min=0/max=1) ──▶ Supabase PG(세션 풀러)
+  ① tick:   */5 9-15 * * 1-5 (Asia/Seoul)  → /internal/tick                       (AWS 서울 — §아래 DB 결정)
+  ② report: 30 16 * * *      (Asia/Seoul)  → /internal/report?force=false (휴장일에만 실생성 — §3.9)
+아웃바운드: 토스 API · Anthropic · Telegram
+```
+
+**재검토에서 확인된 격차 — 로컬과 달라지는 것**:
+
+| # | 항목 | 대응 |
+|---|---|---|
+| 1 | 내장 틱 루프 사용 불가(min=0 — 요청 밖 CPU 스로틀·인스턴스 수시 종료) | `TICK_INTERVAL_SEC=0`(이미 기본값) + Scheduler 잡 ① |
+| 2 | **휴장일 보고서 트리거가 내장 루프 안에만 있음** → 클라우드에선 죽은 코드 | Scheduler 잡 ② + `/internal/report?force=false` maybe 경로 신설(§3.9) |
+| 3 | **컨테이너 FS 휘발** → `reports/*.md` 유실 + 비루트(runner)가 `/app/reports` mkdir 실패 → 500 | 보고서 본문을 DB 정본으로(§3.9), 파일 저장은 best-effort 강등 |
+| 4 | 틱 소요시간(조사 ≤5콜 + 판단 ≤10콜 직렬 = 수 분) > Scheduler 기본 deadline 3분 | `attempt_deadline=900s` · Cloud Run timeout 900s · `retry_count=0`(다음 파이어가 커버, 중복은 락) |
+| 5 | 콜드 스타트 시 엔진 상태 | **이미 대응됨** — 킬스위치·CB 래치·원장·캔들 캐시 전부 DB 복원 설계 |
+| 6 | 토스 API 가 데이터센터 IP 를 차단할 가능성(미확인 — BASIC tier 문서에 명시 없음) | 서울 리전 + **배포 직후 1단계 검증**(§3.2 말미): 토스 인증·조회 성공 확인 후에만 Scheduler 활성화 |
+| 7 | `ENV=production` 판별 부재(§3.7 하드닝·경로 분기의 전제) | §3.7 과 함께 `ENV` 설정 도입 |
+
+**예상 비용 (월, asia-northeast3 — 2026-07 단가 기준 추정치, 청구 전 콘솔 재확인)**:
+
+| 항목 | 산정 근거 | 월 예상 |
+|---|---|---|
+| Cloud Run | 1 vCPU/1GiB request-based. 틱 ~1,700회/월 × 1–8분(LLM 대기 포함 과금) − 무료구간 180k vCPU-s | **$2–12** |
+| DB — Supabase 무료 티어 | AWS 서울(ap-northeast-2)·500MB·세션 풀러 (**채택 — 아래 결정**) | **$0** |
+| Scheduler·Artifact Registry·Secret Manager·Logging·egress | 잡 2개(3개까지 무료)·이미지<0.5GB·시크릿 6·로그<50GiB | **$0–1** |
+| **GCP 소계** | (Cloud SQL 전환 시 +$11–13) | **≈ $2–13** |
+| Anthropic 판단 (Opus, 프롬프트 캐시) | 실질 150–400콜/일(상한 400) × 입력 ~3k/출력 ~0.3k tok | **$40–120** |
+| Anthropic 조사 (web_search) | 캐시 없으면 최대 ~390콜/일 — **비용 지배 항목** | **$80–300** → §3.10 캐시 도입 시 **$10–40** |
+| **총계 (§3.10 포함)** | | **≈ $50–170/월** |
+
+- LLM 비용은 클라우드 이전과 무관하게 로컬에서도 동일하게 발생 — 절감 노브:
+  §3.10(최우선) → `TICK_INTERVAL` 5→10분(전체 ½) → `RESEARCH_TOP_N`/`JUDGE_TOP_N` 축소.
+- **DB 결정(2026-07-11)**: Supabase 무료 티어 채택(비용), 단 **Cloud SQL 전환을 상시 대비**:
+  - 코드는 `DATABASE_URL` 문자열 하나로 추상 — 전환 시 코드 변경 0. Terraform 에는 Cloud SQL
+    모듈을 `var.enable_cloud_sql=false` 스텁으로 유지(§3.2), 전환 = 변수 토글 + 시크릿 교체.
+  - 전환 절차(장외에): `pg_dump` → Cloud SQL 복원 → DATABASE_URL 시크릿 새 버전 → 재배포.
+    **LIVE(M3) 진입 전에는 반드시 전환**(실자금 원장을 무료 서드파티에 두지 않는다).
+  - **함정**: Supabase 직결 호스트(db.\<ref\>.supabase.co)는 IPv6 전용 ↔ Cloud Run 이그레스는
+    IPv4 → **Supavisor 세션 모드**(`aws-0-ap-northeast-2.pooler.supabase.com:5432`, 사용자
+    `postgres.<ref>`)를 쓴다. 트랜잭션 모드(6543) 금지 — asyncpg prepared statement 와
+    §3.4 advisory lock(세션 귀속)이 깨진다.
+  - 무료 티어 "7일 무활동 일시정지"는 잡 ②(매일 DB 조회)가 자연 방지.
+
+**구현 순서 (커밋 단위 — W6 전까지는 전부 로컬에서 테스트 가능)**:
+
+| 순번 | 내용 | 성격 |
+|---|---|---|
+| W1 | §3.7 하드닝(`ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
+| W2 | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
+| W3 | §3.3 OIDC 검증 | 코드 |
+| W4 | §3.4 PG advisory lock | 코드 |
+| W5 | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정) | 빌드 |
+| W6 | §3.2 Terraform + 시크릿 주입(운영자) + 배포 → **1단계 검증(토스 IP)** → Scheduler 활성화 | 인프라 |
+| W7 | §3.10 조사 캐시(LLM 비용 절감 — 권장) | 코드 |
+
+운영자 준비물(W6 전): GCP 프로젝트+결제 계정, `gcloud` CLI 인증, **Supabase 무료 프로젝트
+생성(리전 서울)**, 시크릿 값 6종(토스 2·Anthropic·API_KEY·DATABASE_URL(Supabase 세션 풀러)·
+텔레그램 토큰), KRX 2026 휴장일 공지 검증(§3.6 잔여).
+
 ### 3.1 Dockerfile (+ .dockerignore)
 
 ```dockerfile
@@ -261,22 +327,43 @@ USER runner
 # Cloud Run 은 $PORT 를 주입한다 — 8080 기본
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
 ```
-`.dockerignore`: `.venv/ tests/ scripts/ *.db __pycache__/ .pytest_cache/ *.egg-info/`.
+`.dockerignore`: `.venv/ tests/ scripts/ *.db __pycache__/ .pytest_cache/ *.egg-info/ .env*`.
 scripts 는 이미지에 불필요(진단은 로컬). **주의**: `.env` 류가 이미지에 절대 들어가지 않게 확인.
+
+재검토 추가(§3.0):
+- **비루트 쓰기**: `/app` 은 runner 소유가 아니다 — 보고서는 §3.9 로 DB 가 정본,
+  클라우드 env 는 `REPORTS_DIR=/tmp/reports`(그마저 실패해도 §3.9 가 warning 강등).
+- **파이썬 버전**: 로컬 3.14 / 이미지 3.12 — pyproject `>=3.12` 이므로 CI(§3.8)를 3.12 로
+  고정해 이미지와 정합(로컬-이미지 차이를 CI 가 조기 검출).
+- **빌드 스모크**: `docker build` 후 `docker run -e API_KEY=test -p 8080:8080` → `/health` 200 확인
+  (DB·토스 미설정 상태로도 기동해야 한다 — 기존 옵셔널 설계 그대로).
 
 ### 3.2 Terraform 리소스 명세 (`infra/`)
 
 | 리소스 | 필수 설정 | 함정 |
 |---|---|---|
 | `google_artifact_registry_repository` | `asia-northeast3`, docker | |
-| `google_secret_manager_secret` ×5 | TOSS_CLIENT_ID/SECRET · ANTHROPIC_API_KEY · API_KEY · DATABASE_URL | 값은 TF 밖에서 주입(`gcloud secrets versions add`) — state 에 비밀 금지 |
-| `google_sql_database_instance` | PostgreSQL 16, `asia-northeast3`, 최소 사양(db-f1-micro 급) | 삭제 보호 on |
-| `google_cloud_run_v2_service` | env: secret refs. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치) | Cloud SQL 연결: `run.googleapis.com/cloudsql-instances` annotation + unix socket, 또는 Cloud SQL Python Connector |
+| `google_secret_manager_secret` ×6 | TOSS_CLIENT_ID/SECRET · ANTHROPIC_API_KEY · API_KEY · DATABASE_URL · NOTIFY_TELEGRAM_BOT_TOKEN | 값은 TF 밖에서 주입(`gcloud secrets versions add`) — state 에 비밀 금지. chat_id 는 평문 env 가능 |
+| `google_sql_database_instance` — **스텁**(`var.enable_cloud_sql=false`, 기본 미생성) | 전환 대비만: PG16, `asia-northeast3`, db-f1-micro 급, 삭제 보호 on | DB 는 Supabase(§3.0 결정). 전환 = 변수 토글 + DATABASE_URL 시크릿 교체 |
+| `google_cloud_run_v2_service` | env: secret refs + `ENV=production`·`REPORTS_DIR=/tmp/reports`·`TICK_INTERVAL_SEC=0`. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치), **timeout 900s**(틱이 수 분 — §3.0-4) | DB 연결: DATABASE_URL 시크릿 직결(Supabase 세션 풀러 — §3.0 함정 참조). Cloud SQL 전환 시 `run.googleapis.com/cloudsql-instances` annotation + unix socket 으로 교체. **`--no-allow-unauthenticated`** — 플랫폼 IAM 이 1차 방벽(invoker = scheduler-sa + 운영자 계정만), 앱 인증(OIDC/API키)은 2차 |
 | `google_service_account` ×2 | run-sa(Secret accessor·SQL client), scheduler-sa(run invoker) | 최소 권한 |
-| `google_cloud_scheduler_job` | HTTP POST `{run_url}/internal/tick`, **OIDC token**(scheduler-sa, audience=run_url) | cron 은 UTC: 장중 09:00–15:30 KST = `*/5 0-6 * * 1-5` (00:00–06:55 UTC) — 06:30 초과분은 서버 장시간 가드가 거른다. KRX 휴장일도 서버가 거른다(§3.6) |
+| `google_cloud_scheduler_job` ×2 | ① tick `*/5 9-15 * * 1-5` ② report `30 16 * * *` — 둘 다 **`time_zone="Asia/Seoul"`**(UTC 환산 불필요·오프바이원 예방), HTTP POST + **OIDC token**(scheduler-sa, audience=run_url) | **`attempt_deadline="900s"`**(기본 3분이면 틱 도중 잘림)·`retry_count=0`(다음 파이어가 커버 — 재시도는 중복 파이어만 만든다, 락이 직렬화하지만 무의미). 15:30 초과분·휴장일은 서버가 거른다(§3.6) |
 
-DATABASE_URL(예): `postgresql+asyncpg://user:pw@/dbname?host=/cloudsql/PROJECT:asia-northeast3:INSTANCE`
+DATABASE_URL(예) — Supabase(현행):
+`postgresql+asyncpg://postgres.<ref>:pw@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres`
+· Cloud SQL 전환 시: `postgresql+asyncpg://user:pw@/dbname?host=/cloudsql/PROJECT:asia-northeast3:INSTANCE`
 (asyncpg 는 유닉스 소켓을 `host=` 쿼리로 받는다 — 콜론 경로 그대로).
+
+운영자 수동 호출(--no-allow-unauthenticated 이후): IAM 토큰 + 앱 API키 이중 헤더 —
+`curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" -H "X-API-Key: …" {run_url}/api/status`.
+
+**배포 직후 1단계 검증 (Scheduler 활성화 전 — §3.0-6 토스 IP 리스크)**:
+1. `/health` 200 → `/api/status` (DB·모드·CB 상태 확인)
+2. `/api/holdings` — **토스 인증+조회가 클라우드 IP 에서 성공하는지**가 관문.
+   401/403/차단 시: 토스 Open API 지원 채널에 IP 정책 문의(고정 IP 필요 시 서버리스 VPC 커넥터
+   + Cloud NAT 고정 IP 경로 — 비용 +$10~/월, 필요 확정 전 도입 금지)
+3. `POST /internal/tick` 수동 1회(장중) → 응답 노트·DB 기록·텔레그램 수신 확인
+4. 이상 없으면 Scheduler 잡 2개 enable
 
 ### 3.3 `/internal/tick` OIDC 검증
 
@@ -332,6 +419,8 @@ async def pg_tick_lock(engine) -> AsyncIterator[bool]:
 - 커넥션 끊기면 PG 가 자동 해제(크래시 안전).
 - 통합: `execute_tick` 의 asyncio 락 안쪽에서 `async with pg_tick_lock(app.state.db_engine) as got:`
   → `not got` 이면 `{"skipped": "다른 인스턴스가 틱 실행 중"}`.
+- **Supabase 주의**: advisory lock 은 세션 귀속 — 세션 모드 풀러(5432)에선 정상,
+  트랜잭션 모드(6543)에선 문장마다 커넥션이 바뀌어 무의미(§3.0 DB 결정에서 세션 모드 강제).
 - 테스트: SQLite 경로(항상 True), PG 는 통합환경 없으면 dialect 분기만 단위 테스트 + 문서화.
 
 ### 3.5 ✅ 알림 채널 (텔레그램) — P1 로 승격되어 구현됨
@@ -388,6 +477,41 @@ class TelegramNotifier:
 - 로깅: `LOG_FORMAT=json` 이면 stdlib `logging.Formatter` 를 JSON 포매터로 교체(자체 30줄 구현
   — 의존성 추가 없이). 필드: ts·level·logger·message·tick_id(있으면). Cloud Logging 이 severity 를
   집도록 `severity` 필드 포함.
+
+### 3.9 보고서 클라우드 영속 — 본문 DB 저장 + maybe 트리거 라우트 (재검토 발견 §3.0-2·3)
+
+**문제 2건**: (a) `generate_report` 가 markdown 을 컨테이너 FS 에만 쓰고 DB 엔 경로만 기록
+— Cloud Run FS 는 휘발이라 본문 유실(비루트 권한으로 mkdir 실패 → 500 가능성도).
+(b) 휴장일 자동 트리거(`maybe_generate_report`)가 내장 틱 루프 안에만 있어 클라우드(루프 OFF)에선
+호출 경로가 없고, 기존 `POST /internal/report` 는 force=True 라 매일 cron 을 걸면 거래일에도 중복 생성.
+
+**구현**:
+1. `ReportLogRow.body: Mapped[str | None]`(Text, nullable — 기존 행 호환) +
+   `record_report(period_end, path, body)` 저장. **DB 가 정본**.
+2. 파일 저장(`reports_dir`)은 try/except 로 best-effort 강등 — 실패 시 `log.warning` 후 계속
+   (텔레그램 요약·DB 기록은 진행).
+3. 조회 라우트(API키 인증): `GET /api/reports`(목록 — period_end·generated_at),
+   `GET /api/reports/{period_end}`(본문 markdown).
+4. `POST /internal/report?force=false`(기본값을 false 로 변경) → force=False 는
+   `maybe_generate_report` 시맨틱(휴장일 검사 + period_end 중복 방지 — 거래일엔 no-op).
+   수동 즉시 생성은 `?force=true` 로 기존 동작 유지. Scheduler 잡 ②는 force=false 를 매일 호출.
+5. **테스트**: body 왕복, 파일 저장 실패에도 성공(reports_dir 를 파일로 막아 강제),
+   force=false 가 거래일 no-op/휴장일 생성, force=true 하위호환.
+
+### 3.10 조사(web_search) 결과 TTL 캐시 — LLM 비용 지배 항목 절감 (권장)
+
+**문제(§3.0 비용표)**: 조사는 심볼당 **매 틱** 재실행될 수 있다 — 최대 5콜/틱 × 78틱 = 390콜/일.
+web_search 단가 + 검색결과 토큰(콜당 수천)이 전체 LLM 비용의 지배 항목. 일봉 전략에서 같은
+심볼을 하루에 여러 번 조사할 정보 가치는 낮다.
+
+**구현** — §2.1 캔들 캐시와 동일 패턴(주입형 래퍼, pipeline 무변경 §0-6):
+1. DB `research_cache(symbol UNIQUE, summary TEXT, sources_json TEXT, fetched_at DateTime)`.
+2. tick.py 조립부에서 research 러너를 DB-backed 캐시로 래핑:
+   TTL 내 → 캐시 반환(연구 노트에 "캐시됨 HH:MM" 표기 — LLM 이 신선도를 알게), 경과 → 실조사 후 upsert.
+3. 설정 `RESEARCH_CACHE_TTL_MINUTES=1440`(기본 1거래일. 0=비활성).
+   **이원화 옵션**: 보유 종목(매도 판단)은 뉴스 신선도가 중요 → `RESEARCH_CACHE_HELD_TTL_MINUTES=120`.
+4. 효과: 390콜/일 → 유니버스 로테이션 순증분(대략 40–80콜/일) — 조사 비용 ~80% 절감.
+5. **테스트**: TTL 내 실조사 미호출(콜 카운터), 경과 후 재조사, 보유/비보유 TTL 분기, repo 없으면 생략.
 
 ---
 
@@ -474,7 +598,7 @@ async def cancel_order(self, order_id: str) -> None:      # POST /orders/{id}/ca
 |---|---|---|
 | **P0** | ✅ §1.1 LIVE-DB 강제 · ✅ §1.2 결정적 청산 (§1.3 은 LIVE 직전) | 극단 손실 방지 직결. §1.2 는 페이퍼 회전율(표본 축적)에도 필수 |
 | **P1** | ✅ §2.1 캔들 캐시 · ✅ §3.5 알림 · ✅ §2.3 캘리브레이션 · ✅ §2.2 ADV 선별 | 완료 |
-| **P2** | §3.1–3.4·3.6·3.7 (배포 세트) | 페이퍼 데이터가 쌓이는 동안 병행 |
+| **P2** | §3 배포 세트 — 순서는 §3.0 W1~W7: (3.7+1.3) → 3.9 → 3.3 → 3.4 → (3.1+3.8) → 3.2 → 3.10 | **2026-07-11 클라우드 우선으로 전환 확정**(로컬 상시 가동 불가) — 페이퍼 운용 개시 자체가 M2 |
 | **P3** | §4 전체 (순서: 4.1→4.2→4.3→4.4→4.5) | 게이트 통과 후에만 |
 | **P4** | §2.4–2.6 · §5 | 표본이 충분해진 뒤 의미 |
 
