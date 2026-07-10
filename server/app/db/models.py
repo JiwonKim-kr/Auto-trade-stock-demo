@@ -52,6 +52,7 @@ class DecisionRow(Base):
     action: Mapped[str] = mapped_column(Text)          # BUY/SELL/HOLD
     confidence: Mapped[float] = mapped_column()
     rationale: Mapped[str] = mapped_column(Text, default="")
+    decision_price: Mapped[str | None] = mapped_column(Text, nullable=True)  # 판단 시점 종가(캘리브레이션)
 
 
 class OrderRow(Base):
@@ -152,6 +153,37 @@ class PaperEquityRow(Base):
     positions_value: Mapped[str] = mapped_column(Text)
     realized_cum: Mapped[str] = mapped_column(Text)
     benchmark_price: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SymbolStatsRow(Base):
+    """종목 유동성 통계(ADV20 = 20일 평균 거래대금) — 틱이 받은 캔들에서 공짜로 축적(PLAN §2.2).
+
+    유니버스 선정을 무차별 로테이션 → 'ADV 상위 풀 활용 + 미측정 탐색' 2단계로 전환하는 근거.
+    adv 는 통계량이라 float(정렬 필요 — 돈 Decimal 불변식은 장부에만 적용).
+    """
+
+    __tablename__ = "symbol_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(Text, unique=True)
+    adv20_krw: Mapped[float] = mapped_column()
+    updated_trade_date: Mapped[str] = mapped_column(Text)   # KST YYYY-MM-DD (신선도 판정)
+
+
+class CandleCacheRow(Base):
+    """캔들 TTL 캐시 — 일봉은 장중에 진행 봉만 바뀌므로 틱마다 재조회는 낭비(429 주범).
+
+    유니버스 40종목 × 78틱/일 ≈ 3,120콜 → 캐시(TTL 60분)로 ≈ 240콜(92% 절감).
+    """
+
+    __tablename__ = "candle_cache"
+    __table_args__ = (Index("ix_candle_cache_key", "symbol", "interval", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(Text)
+    interval: Mapped[str] = mapped_column(Text, default="1d")
+    payload_json: Mapped[str] = mapped_column(Text)     # [Candle.model_dump(mode="json"), …]
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class EngineStateRow(Base):

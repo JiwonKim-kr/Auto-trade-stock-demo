@@ -364,7 +364,8 @@ async def test_tick_llm_cap_downgrades_to_fallback(tmp_path):
     assert "상한" in r.json()["engine"]                        # ClaudeJudge 미사용(실 콜 0)
 
 
-async def test_tick_universe_rotates_with_tick_count(tmp_path):
+async def test_tick_universe_explores_full_seed_over_ticks(tmp_path):
+    # 2단계 선정: 콜드스타트 첫 틱은 시드 앞 코호트, 이후 탐색 슬롯이 전 시드를 순회(편향 없음)
     from app.core.settings import Settings
     repo = await make_repo(tmp_path)
     seed = tmp_path / "seed.json"
@@ -376,11 +377,31 @@ async def test_tick_universe_rotates_with_tick_count(tmp_path):
         app.state.settings = Settings(symbol_source_path=str(seed), universe_max_symbols=2,
                                       paper_seed_krw=Decimal("0"))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r1 = await c.post("/internal/tick", headers=KEY)   # 틱수 0 → 코호트 [111111,222222]
-            r2 = await c.post("/internal/tick", headers=KEY)   # 틱수 1 → 코호트 [333333,444444]
-    u1, u2 = set(r1.json()["universe_symbols"]), set(r2.json()["universe_symbols"])
-    assert {"111111", "222222"} <= u1 and not {"333333", "444444"} & u1
-    assert {"333333", "444444"} <= u2 and not {"111111", "222222"} & u2
+            responses = [await c.post("/internal/tick", headers=KEY) for _ in range(4)]
+    universes = [set(r.json()["universe_symbols"]) for r in responses]
+    assert {"111111", "222222"} <= universes[0]                # 콜드스타트 = 로테이션과 동등
+    assert not {"333333", "444444"} & universes[0]
+    covered = set().union(*universes)
+    assert {"111111", "222222", "333333", "444444"} <= covered  # 탐색이 전 시드 커버
+
+
+async def test_tick_accumulates_adv_stats(tmp_path):
+    from app.core.settings import Settings
+    repo = await make_repo(tmp_path)
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps(["111111", "222222"]), encoding="utf-8")
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.toss_client = FakeToss()
+        app.state.repo = repo
+        app.state.settings = Settings(symbol_source_path=str(seed), universe_max_symbols=2,
+                                      paper_seed_krw=Decimal("0"))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            await c.post("/internal/tick", headers=KEY)
+    pool = await repo.load_adv_pool(10)
+    assert "111111" in pool                                    # 캔들에서 ADV 공짜 축적
+    fresh = await repo.load_fresh_symbols("2000-01-01")
+    assert "111111" in fresh
 
 
 def test_in_market_hours():

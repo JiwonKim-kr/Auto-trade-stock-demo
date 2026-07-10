@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import FastAPI
@@ -26,20 +26,22 @@ from app.engine.paper import PaperPortfolio
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.regime import RegimeConfig
 from app.engine.research import WebSearchResearch
-from app.engine.symbols import FileSymbolSource, resolve_symbols
+from app.engine.symbols import FileSymbolSource, resolve_universe
 from app.orders.guardrails import KST
 from app.orders.models import OrderStatus, TradingMode
 from app.orders.reconcile import reconcile, snapshot_from_holdings
 from app.orders.service import OrderService
+from app.toss.caching import CachingToss
 from app.toss.models import Holdings
 
 logger = logging.getLogger("app.tick")
 
 
 async def reconcile_and_enforce(
-    repo, svc: OrderService, holdings: Holdings, now: datetime, *, advance_baseline: bool
+    repo, svc: OrderService, holdings: Holdings, now: datetime, *, advance_baseline: bool,
+    notifier=None, alert_gate=None,
 ) -> dict:
-    """리컨실 실행 + 집행: 불일치 감사 기록, LIVE 면 킬스위치 자동 발동(거래 중단).
+    """리컨실 실행 + 집행: 불일치 감사 기록·알림, LIVE 면 킬스위치 자동 발동(거래 중단).
 
     advance_baseline: 틱은 True(기준선 전진 — 감지된 외부 변화를 흡수해 반복 경보 방지),
     수동 점검(/api/reconcile)은 False(읽기 전용). 기준선 없으면 어느 쪽이든 생성.
@@ -58,11 +60,20 @@ async def reconcile_and_enforce(
     report = reconcile(prev_map, current, delta)
     if not report.ok:
         await repo.audit("system", "reconcile_mismatch", report.as_dict())
+        halted = False
         if svc.mode is TradingMode.LIVE and not svc.kill_switch:
             svc.engage_kill_switch()                             # 실자금 위 불일치 → 거래 중단
+            halted = True
             await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
             await repo.audit("system", "kill_switch",
                              {"engaged": True, "cause": "reconcile_mismatch"})
+        if notifier is not None and alert_gate is not None:
+            key = "reconcile:" + ",".join(
+                f"{d.symbol}:{d.kind.value}" for d in report.discrepancies)
+            if alert_gate.allow(key):                            # 같은 불일치는 60분 1회
+                summary = "; ".join(f"{d.symbol} {d.kind.value}" for d in report.discrepancies)
+                await notifier.send("⚠️ 리컨실 불일치: " + summary
+                                    + (" → 킬스위치 자동 발동" if halted else ""))
     if advance_baseline:
         await repo.save_positions_snapshot(now, items)
     return report.as_dict()
@@ -86,15 +97,23 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
         return {"error": "토스 자격증명 미설정 — 틱 불가"}
     now = datetime.now(KST)
 
-    # 유니버스: 워치리스트 우선 + KRX 시드 코호트 로테이션(틱수 × limit → 전 종목 공평 순환)
+    # 유니버스: 워치리스트 우선 + 2단계 선정(ADV 상위 풀 활용 + 미측정 탐색 — 통계 없으면
+    # 순수 코호트 로테이션과 동등). 통계는 틱이 받은 캔들에서 공짜 축적(추가 API 콜 없음).
     watch = [s.strip() for s in (settings.watchlist or "").split(",") if s.strip()]
     if settings.symbol_source_path:
-        offset = 0
+        seed_codes = [e.code for e in
+                      await FileSymbolSource(settings.symbol_source_path).symbols()]
+        tick_count, adv_pool, fresh = 0, [], set()
         if repo is not None:
-            offset = (await repo.count_ticks()) * settings.universe_max_symbols
-        watch = await resolve_symbols(
-            FileSymbolSource(settings.symbol_source_path),
-            limit=settings.universe_max_symbols, include=watch, offset=offset,
+            tick_count = await repo.count_ticks()
+            adv_pool = await repo.load_adv_pool(settings.adv_pool_size)
+            # 신선도 컷: 14일(≈10 거래일) 이전 측정은 낡음 → 탐색 대상으로 재편입
+            cutoff = trade_date_kst(now - timedelta(days=14))
+            fresh = await repo.load_fresh_symbols(cutoff)
+        watch = resolve_universe(
+            seed_codes, limit=settings.universe_max_symbols, include=watch,
+            tick_count=tick_count, adv_pool=adv_pool, fresh=fresh,
+            explore_ratio=settings.universe_explore_ratio,
         )
 
     # 판단기 선택 — 일일 LLM 판단 상한 도달 시 그날은 결정적 폴백으로 강등(비용 가드)
@@ -145,8 +164,9 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
     if repo is not None:
         daily_used = await repo.buy_notional_today(trade_date_kst(now))
         holdings = await toss.get_holdings()
-        reconcile_report = await reconcile_and_enforce(repo, svc, holdings, now,
-                                                       advance_baseline=True)
+        reconcile_report = await reconcile_and_enforce(
+            repo, svc, holdings, now, advance_baseline=True,
+            notifier=app.state.notifier, alert_gate=app.state.alert_gate)
 
     # 페이퍼 모드(DRY_RUN + DB + seed>0): 페이퍼 장부가 파이프라인을 구동한다 — LLM 이 페이퍼
     # 보유를 매도 평가하고 사이징이 페이퍼 현금을 쓰는 자기일관 루프(전략 P&L 측정 목적).
@@ -184,19 +204,33 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
             ExitConfig(stop_loss_rate=settings.exit_stop_loss_rate,
                        time_stop_days=settings.exit_time_stop_days))
 
+    # 캔들 TTL 캐시(429 방어) — run_tick 의 get_candles(스크리너·레짐 프록시)만 캐시 대상.
+    # 리컨실 holdings·페이퍼 마킹 prices 는 위에서 원본 toss 로 이미 수행(실시간성 유지).
+    toss_for_tick = toss
+    if repo is not None and settings.candle_cache_ttl_minutes > 0:
+        toss_for_tick = CachingToss(toss, repo, settings.candle_cache_ttl_minutes)
+
+    cb_was_tripped = svc.circuit_breaker.tripped               # 알림용 전이 감지(스팸 방지)
+
     result = await run_tick(
-        toss=toss, order_service=svc, watchlist=watch, judge=judge, research=research,
+        toss=toss_for_tick, order_service=svc, watchlist=watch, judge=judge, research=research,
         now=now, research_top_n=settings.research_top_n, entry_gate=entry_gate,
         daily_buy_used_krw=daily_used, regime_config=regime_config, holdings=tick_holdings,
         cash_buying_power_krw=tick_cash, max_buy_candidates=settings.judge_top_n,
         forced_exits=forced_exits,
     )
 
+    if svc.circuit_breaker.tripped != cb_was_tripped:          # 전이만 통지
+        state = "발동" if svc.circuit_breaker.tripped else "해제"
+        await app.state.notifier.send(
+            f"⚠️ 서킷브레이커 {state}: {svc.circuit_breaker.reason or '낙폭 회복'}")
+
     tick_id = None
     paper_summary = None
     if repo is not None:  # 틱/결정/주문 전수 기록 + 엔진 상태(서킷브레이커) 저장
         tick_id = await repo.record_tick(result, started_at=now)
         await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
+        await repo.upsert_symbol_stats(result.adv20, trade_date_kst(now))   # ADV20 축적
         if paper is not None:  # 의도 주문 모의 체결 → 장부 저장 → 자산곡선 1점 기록
             fills = []
             for o in result.orders:
@@ -260,5 +294,7 @@ async def tick_loop(app: FastAPI) -> None:
                         result.get("note") or result.get("skipped") or "")
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
             logger.exception("자동 틱 실패 — 다음 주기에 재시도")
+            if app.state.alert_gate.allow(f"loop:{type(e).__name__}"):   # 같은 예외 60분 1회
+                await app.state.notifier.send(f"❌ 자동 틱 실패: {type(e).__name__}: {e}")

@@ -102,6 +102,57 @@ class FileSymbolSource:
         return out
 
 
+def _rotate(items: list[str], offset: int) -> list[str]:
+    if not items:
+        return items
+    k = offset % len(items)
+    return items[k:] + items[:k]
+
+
+def resolve_universe(
+    seed_codes: list[str],
+    *,
+    limit: int,
+    include: Iterable[str] = (),
+    tick_count: int = 0,
+    adv_pool: list[str] | None = None,
+    fresh: frozenset[str] | set[str] = frozenset(),
+    explore_ratio: float = 0.2,
+) -> list[str]:
+    """유니버스 2단계 선정 — ADV 상위 풀 활용(exploit) + 미측정/낡음 탐색(explore) (PLAN §2.2).
+
+    슬롯: exploit = limit×(1−ratio) 를 adv_pool 로테이션에서, explore = 나머지를 stale
+    (fresh 에 없는 시드 심볼) 로테이션에서 채운다. 부족분은 시드 전체 로테이션 폴백 —
+    **콜드스타트(통계 없음)에는 자연히 순수 로테이션과 동등**하게 동작하고, 통계가 쌓이면
+    유동성 상위에 판단 예산이 집중된다. 워치리스트(include)는 항상 우선.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    def take(stream: list[str], cap: int) -> None:
+        for code in stream:
+            if len(result) >= cap:
+                return
+            if code not in seen:
+                seen.add(code)
+                result.append(code)
+
+    for raw in include:
+        code = normalize_symbol(raw)
+        if code and code not in seen:
+            seen.add(code)
+            result.append(code)
+
+    n_explore = max(1, int(-(-limit * explore_ratio // 1)))          # ceil, 최소 1(탐색 보장)
+    n_exploit = max(0, limit - n_explore)
+    base = len(result)
+    take(_rotate(list(adv_pool or []), tick_count * max(n_exploit, 1)), base + n_exploit)
+    stale = [c for c in seed_codes if c not in fresh]
+    take(_rotate(stale, tick_count * n_explore), limit)
+    take(_rotate(seed_codes, tick_count * limit), limit)             # 폴백(콜드스타트 커버)
+    return result
+
+
 async def resolve_symbols(
     source: SymbolSource,
     *,

@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # 로컬 상시 운용: 예 300 → 장중(KST 평일 09:00–15:30)에만 자동 틱.
     tick_interval_sec: int = 0
 
+    # 캔들 TTL 캐시(분) — 일봉 재조회 낭비 방지(429 방어, DB 필요). 0=비활성
+    candle_cache_ttl_minutes: int = 60
+
+    # 알림(텔레그램) — 서킷브레이커 발동/해제·리컨실 불일치·자동 틱 실패·킬스위치 변경. 미설정=무음
+    notify_telegram_bot_token: str | None = None
+    notify_telegram_chat_id: str | None = None
+
     # DB 영속화 (미설정 시 인메모리 — 재시작 시 원장/엔진 상태 소실. 운영은 필수)
     # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)
     database_url: str | None = None
@@ -56,6 +63,9 @@ class Settings(BaseSettings):
     symbol_source_path: str | None = None
     # 한 틱 후보 상한(캔들은 종목별 호출 → 레이트리밋 보호). 워치리스트 우선 포함분도 이 상한에 포함.
     universe_max_symbols: int = 40
+    # 유니버스 2단계 선정: ADV 상위 풀 크기 + 탐색(미측정) 슬롯 비율(통계 없으면 순수 로테이션과 동등)
+    adv_pool_size: int = 300
+    universe_explore_ratio: float = 0.2
 
     # 가드레일 한도 (KRW)
     per_order_max_krw: Decimal = Decimal("100000")

@@ -122,3 +122,47 @@ async def test_resolve_offset_keeps_include_priority():
     src = _FakeSource(["A00001", "B00002", "C00003"])
     out = await resolve_symbols(src, limit=3, include=["005930"], offset=1)
     assert out == ["005930", "B00002", "C00003"]               # 워치리스트 항상 선두
+
+
+# ── 2단계 유니버스 선정 (ADV 활용 + 탐색) ─────────────────────────────────────
+SEED = ["A00001", "B00002", "C00003", "D00004", "E00005"]
+
+
+def test_universe_cold_start_equals_rotation():
+    # 통계 없음 → 탐색+폴백이 시드 로테이션과 동등(첫 코호트 = 시드 앞부분)
+    from app.engine.symbols import resolve_universe
+    assert resolve_universe(SEED, limit=2, tick_count=0) == ["A00001", "B00002"]
+    out1 = resolve_universe(SEED, limit=2, tick_count=1)
+    assert out1 != ["A00001", "B00002"]                        # 틱마다 다른 코호트
+
+
+def test_universe_exploit_prefers_adv_pool():
+    from app.engine.symbols import resolve_universe
+    out = resolve_universe(SEED, limit=4, tick_count=0,
+                           adv_pool=["E00005", "D00004"], fresh=set(SEED))
+    assert out[:2] == ["E00005", "D00004"]                     # 활용 슬롯 = ADV 상위 우선
+
+
+def test_universe_explore_targets_stale_only():
+    from app.engine.symbols import resolve_universe
+    # fresh 4개 → stale = C00003 만. limit 4 → 탐색 슬롯(1)이 stale 을 잡는다
+    out = resolve_universe(SEED, limit=4, tick_count=0,
+                           adv_pool=["A00001", "B00002", "D00004"],
+                           fresh={"A00001", "B00002", "D00004", "E00005"})
+    assert "C00003" in out
+
+
+def test_universe_include_first_and_no_dupes():
+    from app.engine.symbols import resolve_universe
+    out = resolve_universe(SEED, limit=3, include=["A00001"], tick_count=0,
+                           adv_pool=["A00001", "B00002"], fresh=set())
+    assert out[0] == "A00001" and len(out) == len(set(out)) == 3
+
+
+def test_universe_coverage_over_cycle():
+    # 콜드스타트에서 여러 틱을 돌리면 전 시드가 커버된다(편향 없음)
+    from app.engine.symbols import resolve_universe
+    covered = set()
+    for t in range(6):
+        covered.update(resolve_universe(SEED, limit=2, tick_count=t))
+    assert covered == set(SEED)

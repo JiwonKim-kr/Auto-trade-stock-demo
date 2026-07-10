@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models import (
     AuditRow,
+    CandleCacheRow,
     DecisionRow,
     EngineStateRow,
     OrderRow,
@@ -30,6 +31,7 @@ from app.db.models import (
     PaperStateRow,
     PositionRow,
     PositionSnapshotRow,
+    SymbolStatsRow,
     TickRow,
 )
 from app.engine.paper import PaperPortfolio, PaperPosition
@@ -83,8 +85,10 @@ class Repository:
             s.add(tick)
             await s.flush()                      # tick.id 확보
             for d in result.decisions:
-                s.add(DecisionRow(tick_id=tick.id, symbol=d.symbol, action=d.action.value,
-                                  confidence=d.confidence, rationale=d.rationale))
+                s.add(DecisionRow(
+                    tick_id=tick.id, symbol=d.symbol, action=d.action.value,
+                    confidence=d.confidence, rationale=d.rationale,
+                    decision_price=str(d.decision_price) if d.decision_price is not None else None))
             for o in result.orders:
                 await self._add_order(s, o, tick.id)
             return tick.id
@@ -252,6 +256,60 @@ class Repository:
                 Decimal(r.equity),
                 Decimal(r.benchmark_price) if r.benchmark_price else None)
         return [(d, e, b) for d, (e, b) in sorted(by_day.items())]
+
+    # ── 종목 유동성 통계 (ADV20 — 유니버스 2단계 선정 입력) ─────────────────────
+    async def upsert_symbol_stats(self, stats: dict[str, float], trade_date: str) -> None:
+        """틱이 계산한 ADV20 을 일괄 upsert(캔들에서 공짜 축적 — 추가 API 콜 없음)."""
+        if not stats:
+            return
+        async with self._sm() as s, s.begin():
+            existing = {r.symbol: r for r in (await s.execute(
+                select(SymbolStatsRow).where(SymbolStatsRow.symbol.in_(stats)))).scalars()}
+            for symbol, adv in stats.items():
+                row = existing.get(symbol)
+                if row is None:
+                    s.add(SymbolStatsRow(symbol=symbol, adv20_krw=adv,
+                                         updated_trade_date=trade_date))
+                else:
+                    row.adv20_krw, row.updated_trade_date = adv, trade_date
+
+    async def load_adv_pool(self, size: int) -> list[str]:
+        """ADV20 상위 심볼(내림차순) — 활용(exploit) 풀."""
+        async with self._sm() as s:
+            return list((await s.execute(
+                select(SymbolStatsRow.symbol)
+                .order_by(SymbolStatsRow.adv20_krw.desc()).limit(size))).scalars())
+
+    async def load_fresh_symbols(self, cutoff_trade_date: str) -> set[str]:
+        """cutoff 이후 측정된 심볼 — 나머지가 탐색(explore) 대상(미측정·낡음)."""
+        async with self._sm() as s:
+            return set((await s.execute(
+                select(SymbolStatsRow.symbol)
+                .where(SymbolStatsRow.updated_trade_date > cutoff_trade_date))).scalars())
+
+    # ── 캔들 캐시 (429 방지 — toss/caching.CachingToss 가 사용) ─────────────────
+    async def get_cached_candles(self, symbol: str, interval: str):
+        """(fetched_at UTC, payload list) 또는 None. 역직렬화는 호출자(Candle 모델 의존 회피)."""
+        async with self._sm() as s:
+            row = (await s.execute(
+                select(CandleCacheRow).where(CandleCacheRow.symbol == symbol,
+                                             CandleCacheRow.interval == interval)
+            )).scalars().first()
+        if row is None:
+            return None
+        return _utc(row.fetched_at), json.loads(row.payload_json)
+
+    async def save_cached_candles(self, symbol: str, interval: str, payload: list[dict]) -> None:
+        async with self._sm() as s, s.begin():
+            row = (await s.execute(
+                select(CandleCacheRow).where(CandleCacheRow.symbol == symbol,
+                                             CandleCacheRow.interval == interval)
+            )).scalars().first()
+            if row is None:
+                row = CandleCacheRow(symbol=symbol, interval=interval)
+                s.add(row)
+            row.payload_json = json.dumps(payload, ensure_ascii=False)
+            row.fetched_at = datetime.now(timezone.utc)
 
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────
     async def load_engine_state(self) -> tuple[bool, dict] | None:

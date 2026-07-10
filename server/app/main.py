@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.api.tick import tick_loop
 from app.core.config import load_trading_mode
+from app.core.notify import AlertGate, NullNotifier, TelegramNotifier
 from app.core.settings import get_settings
 from app.db.repo import Repository
 from app.db.session import init_db, make_engine, make_sessionmaker
@@ -99,6 +100,15 @@ async def lifespan(app: FastAPI):
     if settings.api_key == "dev-local-key":
         logger.warning("API_KEY 가 기본값입니다 — 운영 전 반드시 변경(Secret Manager)")
 
+    # 알림 채널(미설정 = 무음) + 반복 억제 게이트
+    if settings.notify_telegram_bot_token and settings.notify_telegram_chat_id:
+        app.state.notifier = TelegramNotifier(settings.notify_telegram_bot_token,
+                                              settings.notify_telegram_chat_id)
+        logger.info("텔레그램 알림 활성")
+    else:
+        app.state.notifier = NullNotifier()
+    app.state.alert_gate = AlertGate()
+
     # 틱 직렬화 락(+내장 루프). 운영(Cloud Scheduler)은 interval=0 — 루프 없이 락만 사용
     app.state.tick_lock = asyncio.Lock()
     loop_task = None
@@ -112,6 +122,8 @@ async def lifespan(app: FastAPI):
             loop_task.cancel()
         if app.state.toss_client is not None:
             await app.state.toss_client.aclose()
+        if isinstance(app.state.notifier, TelegramNotifier):
+            await app.state.notifier.aclose()
         if app.state.db_engine is not None:
             await app.state.db_engine.dispose()
 

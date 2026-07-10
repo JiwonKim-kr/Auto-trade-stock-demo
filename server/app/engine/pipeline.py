@@ -49,6 +49,7 @@ class TickResult:
     cost_gated: list[str] = field(default_factory=list)   # 비용 게이트로 차단된 매수 후보
     regime: dict = field(default_factory=dict)             # 레짐 판정(level·σ·배수) — 미평가 시 빈 dict
     forced_exits: list[dict] = field(default_factory=list)  # 결정적 청산(손절·타임스톱) 발동 내역
+    adv20: dict = field(default_factory=dict)               # 심볼→20일 평균 거래대금(float) — 유동성 축적
 
 
 class DeterministicJudge:
@@ -89,13 +90,16 @@ async def run_tick(
     regime: RegimeAssessment | None = None
     forced = {f.symbol: f for f in (forced_exits or [])}
 
+    adv20: dict[str, float] = {}
+
     def _result(candidates, decisions, orders, universe, note="", cost_gated=None) -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
                           candidates=candidates, decisions=decisions, orders=orders, note=note,
                           circuit_breaker=cb.tripped, circuit_breaker_reason=cb.reason,
                           cost_gated=cost_gated or [],
                           regime=regime.as_dict() if regime else {},
-                          forced_exits=[f.as_dict() for f in forced.values()])
+                          forced_exits=[f.as_dict() for f in forced.values()],
+                          adv20=adv20)
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union. holdings 는 호출자가 선조회해 주입 가능
     #    (라우트가 리컨실에 이미 조회한 것을 재사용 — 레이트리밋 보호, 이중 조회 방지)
@@ -113,7 +117,7 @@ async def run_tick(
     eligible_stocks, _excluded = partition_universe([stocks[s] for s in symbols if s in stocks])
     eligible = {s.symbol for s in eligible_stocks} | set(held_symbols)
 
-    # 4) 캔들 → 지표/스크리닝
+    # 4) 캔들 → 지표/스크리닝 (+ ADV20 공짜 축적 — 유니버스 2단계 선정 입력)
     buy_results: list[ScreenResult] = []
     holding_indicators: dict = {}
     recent: dict = {}
@@ -123,6 +127,9 @@ async def run_tick(
         candles = await toss.get_candles(sym, "1d")
         result = screen_symbol(sym, candles, screen_config)
         recent[sym] = [float(c.close_price) for c in candles]
+        tail = candles[-20:]
+        if tail:
+            adv20[sym] = sum(float(c.close_price) * float(c.volume) for c in tail) / len(tail)
         if sym in held_symbols:
             holding_indicators[sym] = result.indicators
         elif result.passed:
@@ -178,6 +185,11 @@ async def run_tick(
         for f in forced.values() if f.symbol in {c.symbol for c in candidates}
     ]
     decisions += await decide_candidates(judge_candidates, judge)
+    ctx_lookup = {c.symbol: c for c in candidates}
+    for d in decisions:                    # 판단 시점 종가 주입 — confidence 캘리브레이션 데이터
+        c = ctx_lookup.get(d.symbol)
+        if d.decision_price is None and c is not None and c.indicators is not None:
+            d.decision_price = c.indicators.last_close
 
     # 9) 사이징 + 주문 (DRY_RUN; 실주문 0은 주문층이 보장)
     ctx_by = {c.symbol: c for c in candidates}

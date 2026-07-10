@@ -49,6 +49,7 @@ class Decision(BaseModel):
     symbol: str
     confidence: float
     rationale: str
+    decision_price: float | None = None   # 판단 시점 종가 — LLM 출력 아님, 시스템이 사후 주입(캘리브레이션용)
 
 
 @dataclass

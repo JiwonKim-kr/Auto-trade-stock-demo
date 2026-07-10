@@ -96,6 +96,8 @@ async def kill_switch(
     if repo is not None:  # 재시작 생존 + 감사
         await repo.save_engine_state(svc.kill_switch, svc.circuit_breaker.dump_state())
         await repo.audit("api", "kill_switch", {"engaged": svc.kill_switch})
+    await request.app.state.notifier.send(
+        f"킬스위치 {'ON — 전 주문 차단' if svc.kill_switch else 'OFF — 재개'} (수동)")
     return {"kill_switch": svc.kill_switch}
 
 
@@ -116,7 +118,9 @@ async def reconcile_check(
         return {"status": "DISABLED", "reason": "DATABASE_URL 미설정 — 리컨실은 DB 필요"}
     holdings_ = await toss.get_holdings()
     return await reconcile_and_enforce(repo, svc, holdings_, datetime.now(KST),
-                                       advance_baseline=False)
+                                       advance_baseline=False,
+                                       notifier=request.app.state.notifier,
+                                       alert_gate=request.app.state.alert_gate)
 
 
 @api.get("/evaluation")
