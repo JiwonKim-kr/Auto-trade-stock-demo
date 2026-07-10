@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from app.api.deps import get_order_service, get_toss_client, require_api_key
+from app.api.deps import get_order_service, get_toss_client, require_api_key, require_tick_auth
 from app.api.report import generate_report, scheduled_report
 from app.api.tick import execute_tick, reconcile_and_enforce
 from app.engine.evaluation import evaluate
@@ -161,9 +161,9 @@ async def evaluation_check(request: Request) -> dict:
     return report.as_dict()
 
 
-@router.post("/internal/tick", dependencies=[Depends(require_api_key)])
+@router.post("/internal/tick", dependencies=[Depends(require_tick_auth)])
 async def tick(request: Request, toss: TossClient = Depends(get_toss_client)) -> dict:
-    """거래 틱 1회(조립·실행은 api/tick.py — 내장 루프와 공유). 운영은 OIDC 권장(TODO)."""
+    """거래 틱 1회(조립·실행은 api/tick.py — 내장 루프와 공유). 인증: OIDC 또는 API 키(§3.3)."""
     return await execute_tick(request.app)
 
 
@@ -188,7 +188,7 @@ async def report_body(period_end: str, request: Request) -> PlainTextResponse:
     return PlainTextResponse(body, media_type="text/markdown; charset=utf-8")
 
 
-@router.post("/internal/report", dependencies=[Depends(require_api_key)])
+@router.post("/internal/report", dependencies=[Depends(require_tick_auth)])
 async def report_now(request: Request, force: bool = False) -> dict:
     """보고서 생성. force=true 수동 즉시(중복 무시) · 기본 false 는 휴장일에만 실생성
     — Scheduler 잡 ②가 매일 호출해도 거래일/기생성은 스킵(§3.9)."""

@@ -301,7 +301,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 |---|---|---|
 | W1 ✅ | §3.7 하드닝(`APP_ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
 | W2 ✅ | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
-| W3 | §3.3 OIDC 검증 | 코드 |
+| W3 ✅ | §3.3 OIDC 검증 | 코드 |
 | W4 | §3.4 PG advisory lock | 코드 |
 | W5 | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정) | 빌드 |
 | W6 | §3.2 Terraform + 시크릿 주입(운영자) + 배포 → **1단계 검증(토스 IP)** → Scheduler 활성화 | 인프라 |
@@ -365,7 +365,7 @@ DATABASE_URL(예) — Supabase(현행):
 3. `POST /internal/tick` 수동 1회(장중) → 응답 노트·DB 기록·텔레그램 수신 확인
 4. 이상 없으면 Scheduler 잡 2개 enable
 
-### 3.3 `/internal/tick` OIDC 검증
+### 3.3 ✅ `/internal/tick` OIDC 검증 (구현됨 — /internal/report 도 동일. Bearer 제시 시 API 키 폴백 차단)
 
 의존성 `google-auth` 추가. [server/app/api/deps.py](server/app/api/deps.py):
 ```python

@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings",
     "anthropic",
+    "google-auth",       # /internal/* OIDC 검증(§3.3 — Cloud Scheduler 호출 인증)
+    "requests",          # google-auth 의 토큰 검증 transport 전용(앱 HTTP 는 httpx)
     "sqlalchemy>=2",     # DB 영속화(async ORM)
     "asyncpg",           # 운영 드라이버(postgresql+asyncpg). 로컬/테스트는 aiosqlite(dev)
 ]

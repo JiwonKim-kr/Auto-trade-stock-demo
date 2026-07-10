@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # 데스크톱 ↔ 서버 인증 (운영 전 반드시 변경)
     api_key: str = "dev-local-key"
 
+    # Cloud Scheduler → /internal/* OIDC 검증(§3.3). audience = Cloud Run URL.
+    # 미설정(로컬)이면 OIDC 경로 비활성 — API 키 폴백만 동작.
+    oidc_audience: str | None = None
+    scheduler_sa_email: str | None = None
+
     # 토스 자격증명 (없으면 토스 연동 비활성 → 관련 엔드포인트 503)
     toss_client_id: str | None = None
     toss_client_secret: str | None = None
