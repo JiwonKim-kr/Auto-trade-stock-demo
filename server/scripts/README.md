@@ -16,7 +16,7 @@ Copy-Item server/scripts/.env.example server/scripts/.env
 | `probe_candles.py` | `/candles` 등 엔드포인트 **파라미터/응답 형태 발견** 프로브 (`"symbol=005930&interval=1d"`) | 없음(stdlib) |
 | `fetch_krx_symbols.py` | **KRX 심볼 시드 생성**(KOSPI+KOSDAQ → `data/krx_symbols.json`). out-of-band(틱 중 호출 아님), 주기적 갱신 | 없음(stdlib) |
 | `live_check.py` | **운영 클라이언트**(httpx + Pydantic 모델)로 라이브 읽기 전용 점검 | 앱 패키지 |
-| `llm_live_check.py` | **LLM 엔진 라이브 검증** — Fable 5 판단 1콜 + web_search 조사 1콜(유료·소액, 주문 무관) | 앱 패키지 + Anthropic 키 |
+| `llm_live_check.py` | **LLM 엔진 라이브 검증** — Opus 4.8 판단 1콜 + web_search 조사 1콜(유료·소액, 주문 무관) | 앱 패키지 + Anthropic 키 |
 | `calibration_report.py` | **confidence 캘리브레이션** — BUY 판단의 t+5/t+20 수익률 버킷 분석(단조성 판정) | 앱 패키지 + DB |
 | `run_local.py` | **로컬 서버 런처** — `.env` → process env 로드 후 uvicorn 구동(상시 운용 진입점, [USAGE.md](../../USAGE.md)) | 앱 패키지 |
 | `tick_dry_run.py` | **전 거래 파이프라인**을 실계좌로 1회 DRY_RUN 실행(`[워치리스트]` 또는 `--seed [N]`) | 앱 패키지 |

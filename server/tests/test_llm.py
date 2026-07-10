@@ -106,19 +106,28 @@ def test_user_content_handles_missing_indicators():
 
 
 # ── ClaudeJudge ───────────────────────────────────────────────────────────────
-async def test_judge_builds_fable5_request_with_fallback():
+async def test_judge_builds_opus_request():
     client = _FakeClient(_decision_resp())
     judge = ClaudeJudge(client=client, config=LLMConfig())
     d = await judge.decide(ctx())
     rec = client.recorded
-    assert rec["model"] == "claude-fable-5"
-    assert rec["fallbacks"] == [{"model": "claude-opus-4-8"}]
-    assert "server-side-fallback-2026-06-01" in rec["betas"]
-    assert "thinking" not in rec                                 # Fable 5: thinking 미전송
+    assert rec["model"] == "claude-opus-4-8"                     # 비용 사유로 Fable → Opus 전환
+    assert "fallbacks" not in rec and "betas" not in rec         # 폴백 기본 비활성(Fable 전용이었음)
+    assert "thinking" not in rec and "temperature" not in rec    # 샘플링 파라미터 미전송(재현성)
     assert rec["output_config"]["format"]["schema"] == DECISION_SCHEMA
     assert "target_weight" not in DECISION_SCHEMA["properties"]  # 사이징 제거
     assert rec["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert d.action is Action.BUY and d.symbol == "005930"
+
+
+async def test_judge_fallback_mechanism_kept_when_enabled():
+    client = _FakeClient(_decision_resp())
+    judge = ClaudeJudge(client=client, config=LLMConfig(enable_fallback=True,
+                                                        fallback_model="claude-haiku-4-5-20251001"))
+    await judge.decide(ctx())
+    rec = client.recorded
+    assert rec["fallbacks"] == [{"model": "claude-haiku-4-5-20251001"}]
+    assert "server-side-fallback-2026-06-01" in rec["betas"]
 
 
 async def test_judge_clamps_confidence_and_pins_symbol():

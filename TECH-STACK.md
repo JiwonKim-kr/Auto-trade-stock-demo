@@ -16,7 +16,7 @@
 | 데스크톱(눈) | **Tauri 2 + React/TS** | 경량 셸, 얇은 클라이언트 |
 | 데이터베이스 | **Cloud SQL (PostgreSQL 16)** | 주문/포지션/감사 관계형 |
 | 클라우드 | **GCP** (Cloud Run·Artifact Registry·Secret Manager·Cloud Scheduler) | 인사이트 §6 그대로 |
-| AI | **Claude `claude-opus-4-8`** | 하이브리드 2단계, tool-use 구조화 출력 |
+| AI | **Claude `claude-opus-4-8`** (판단·조사 단일) | Fable 5→비용 사유 전환(2026-07). output_config 구조화 출력·프롬프트 캐싱 |
 | 리전 | **`asia-northeast3`(서울)** | 프로토타입과 동일, KRX/토스 근접 |
 | IaC / CI | **Terraform + GitHub Actions** | 재현 가능한 인프라·배포 |
 
@@ -34,7 +34,7 @@
 │   Tauri 2 + React/TS     │   현황 조회 · 킬스위치 · 모드전환     │   FastAPI (async)                         │
 │   - 노드그래프/캔들 뷰    │  ◀───────────────────────────────   │   ├─ Toss 클라이언트 (함정 내재화)         │
 │   - API키 OS키체인 보관   │         서버 API 응답(JSON)          │   ├─ 스크리너(pandas-ta) → 후보            │
-└─────────────────────────┘                                       │   ├─ AI 엔진(Claude opus-4-8, tool-use)   │
+└─────────────────────────┘                                       │   ├─ AI 엔진(Claude opus-4-8, 구조화출력)│
                                                                    │   ├─ 주문층(모드게이트+하드가드레일)       │
    ┌──────────────────────┐     OIDC (장중 N분 cron)              │   └─ 킬스위치/리컨실/감사로깅              │
    │  Cloud Scheduler      │  ─────────────────────────────────▶  │   POST /internal/tick                     │
@@ -61,12 +61,12 @@
 | 런타임 | **Python 3.12+** | 최신 타입힌트·성능. (3.13도 가능) |
 | 웹 프레임워크 | **FastAPI** | async, Pydantic v2 검증, OpenAPI 자동 생성(→ 데스크톱 타입) |
 | ASGI 서버 | **Uvicorn** (Cloud Run 단일 프로세스, 동시성은 async) | 컨테이너 1프로세스 권장 |
-| HTTP 클라이언트 | **httpx** (async, 타임아웃·재시도) | 토스 호출용. `tenacity`로 백오프 |
+| HTTP 클라이언트 | **httpx** (async, 타임아웃·재시도) | 토스 호출용. 백오프는 클라이언트 내장(Retry-After 존중 — tenacity 불채택) |
 | 데이터 검증/설정 | **Pydantic v2 + pydantic-settings** | 토스 `{result}` 언래핑·DTO·env 검증 |
 | ORM / 마이그레이션 | **SQLAlchemy 2.0 (async) + Alembic**, 드라이버 **asyncpg** | 관계형·트랜잭션·리컨실 쿼리 |
-| 퀀트/지표 | **pandas + numpy + pandas-ta**(또는 `ta`) | 결정적 스크리너. TA-Lib는 C의존성↑라 순수파이썬 우선 |
-| LLM | **anthropic** (Python SDK), `claude-opus-4-8` | tool-use 구조화 출력, 프롬프트 캐싱 |
-| 의존성/빌드 | **uv** | 빠르고 재현성 높은 lock. (poetry 대안) |
+| 퀀트/지표 | **순수 파이썬**(indicators.py — SMA·RSI Wilder) | 의존성 최소. pandas-ta 는 지표 확장 시 도입(future) |
+| LLM | **anthropic** (Python SDK), `claude-opus-4-8` | output_config 구조화 출력, 프롬프트 캐싱 |
+| 의존성/빌드 | **pip**(현행) | uv 는 배포(Docker) 단계에서 재검토 |
 | 린트/포맷/타입 | **ruff** (lint+format) + **mypy** | |
 | 테스트 | **pytest + pytest-asyncio + respx**(httpx 목) | 토스 응답 픽스처로 매핑 회귀 방지 |
 | 컨테이너 | **Docker** (python:3.12-slim 베이스) | Artifact Registry로 푸시 |
@@ -122,32 +122,38 @@ REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 
 | `position_snapshots`+`positions` | ts, symbol, quantity… | 리컨실 기준선(0종목 청산도 성립) |
 | `paper_state`+`paper_positions` | cash, realized_cum, trade_count / symbol, qty, avg_cost | 페이퍼 장부(모의 체결 상태) |
 | `paper_equity` | ts, trade_date, equity, benchmark_price… | 페이퍼 자산곡선(평가 입력, 벤치마크 동시 기록) |
+| `symbol_stats` | symbol, adv20_krw, updated_trade_date | 유동성(ADV20) 축적 — 유니버스 2단계 선정 입력 |
+| `candle_cache` | symbol, interval, payload, fetched_at | 캔들 TTL 캐시(429 방어, 92% 콜 절감) |
+| `report_log` | generated_at, period_end, path | 휴장일 자동 보고서 중복 방지 |
 
 - **DB I/O 는 경계(라우트/lifespan)에만** — `run_tick`은 DB를 모른다(주입 철학 일관). 틱 전에 오늘 매수
   사용액을 DB에서 읽어 넘기고, 틱 후에 기록 — **일일 매수 한도가 틱 경계 너머로 강제**된다(이전엔 틱 내부만).
 - 마이그레이션: 현재 시작 시 `create_all`(초기 스키마·단일 서비스). 스키마 진화 시 **Alembic** 도입.
 - 접속: 로컬/테스트 `sqlite+aiosqlite`, 운영 `postgresql+asyncpg`(Cloud Run → Cloud SQL은
   **Cloud SQL Connector** 또는 유닉스 소켓, 접속정보는 **Secret Manager**).
-- `accounts`/`universe_symbols`/`positions`(보유 스냅샷·리컨실용)는 리컨실 단계에서 추가 예정.
+- `positions`(리컨실)·`universe_symbols`(→`symbol_stats` 로 대체 구현) 완료. `accounts` 는 불필요해짐(accountSeq 자동 판별).
 
 ---
 
 ## 5. AI 엔진 — 하이브리드 2단계
 
 ```
-유니버스(외부 심볼 + 마스터 플래그 보수적 제외)
-        │  ── 결정적 기술지표 스크리너 (pandas-ta)  →  소수 후보로 압축
-        │      └─ [하드 가드레일 1차: LLM이 못 넘는 안전선 — 우선주/레버리지/정지/장외시간/한도]
+유니버스(KRX 시드 + ADV 2단계 선정 + 마스터 플래그 보수적 제외)
+        │  ── 결정적 기술지표 스크리너 (순수 파이썬 SMA/RSI)  →  score 상위 N 압축
+        │      └─ [warnings enrich: 투자경고 등 종목별 경고 → 매수 후보 제외]
         ▼
-   후보(per-symbol enrich: warnings·저유동성·동전주)
-        │  ── Claude claude-opus-4-8 (tool-use / JSON 구조화 출력)
-        │      → BUY/SELL/HOLD + 사이징 + 근거 텍스트
+   후보(매수 후보 + 보유) ── 조사(Claude web_search grounded 브리프, 상위 N)
+        │  ── Claude claude-opus-4-8 (output_config JSON 구조화 출력)
+        │      → BUY/SELL/HOLD + confidence + 근거 텍스트   ★ 사이징 안 함(결정적 allocator 가)
         ▼
-   결정 로깅(decisions) → [하드 가드레일 2차: 주문 직전 재검사] → 주문층
+   결정 로깅(decisions) → 결정적 청산·비용 게이트·레짐 배수 → allocator 사이징
+        → [하드 가드레일: 주문 직전 결정적 재검사] → 주문층
 ```
 
-- **구조화 출력**: anthropic SDK의 tool-use(함수 스키마)로 `{action, symbol, size, confidence, rationale}`
-  강제 → 파싱 견고. **시스템 프롬프트 캐싱**으로 비용 절감.
+- **구조화 출력**: `output_config`(json_schema)로 `{action, symbol, confidence, rationale}` 강제
+  — **사이징(size)은 스키마에서 의도적으로 제외**(LLM 은 방향+확신만, §7 ADR). **시스템 프롬프트
+  캐싱**으로 비용 절감. 모델은 `claude-opus-4-8` 단일(판단·조사 — Fable 5 는 비용 부담으로 2026-07 전환,
+  refusal 폴백 메커니즘은 유지하되 기본 비활성).
 - **근거 전수 로깅**: 모든 결정의 rationale을 `decisions`에 저장(감사·사후분석).
 - **가드레일은 LLM 바깥**: 진입 전(후보 압축)·주문 직전 2회 결정적 검사. LLM은 가드레일을 통과한
   공간에서만 판단. (순수 LLM 환각/순수 규칙 경직의 절충)
@@ -257,22 +263,21 @@ Auto-trade-stock-demo/
 │  ├─ app/
 │  │  ├─ api/               # 라우트(공개 API + /internal/tick)
 │  │  ├─ toss/              # 토스 클라이언트(함정 내재화) + Pydantic 모델
-│  │  ├─ engine/            # 스크리너(pandas-ta) + AI(Claude)
+│  │  ├─ engine/            # 스크리너(순수 파이썬)·AI(Claude)·레짐·게이트·청산·페이퍼·평가·샌드박스
 │  │  ├─ orders/            # 주문층 + 하드 가드레일 + 킬스위치
-│  │  ├─ db/                # SQLAlchemy 모델 + Alembic
+│  │  ├─ db/                # SQLAlchemy 모델(Alembic 은 스키마 진화 시)
 │  │  └─ core/              # config(pydantic-settings)·보안·로깅
 │  ├─ scripts/toss_smoke.py # ★ 가장 먼저 작성
 │  ├─ tests/
 │  ├─ pyproject.toml        # uv
 │  └─ Dockerfile
-├─ desktop/                 # Tauri 2 + React/TS (눈)
+├─ desktop/                 # (예정) Tauri 2 + React/TS (눈)
 │  ├─ src/                  # React UI(노드그래프·캔들·제어판)
 │  ├─ src-tauri/            # Rust 셸(키체인·업데이터)
 │  └─ package.json
-├─ shared/
-│  └─ api-types/            # FastAPI OpenAPI → openapi-typescript 생성물
-├─ infra/                   # Terraform(Cloud Run·SQL·Secret·Scheduler)
-├─ .github/workflows/       # CI/CD
+├─ shared/                  # (예정) api-types — OpenAPI → openapi-typescript 생성물
+├─ infra/                   # (예정) Terraform(Cloud Run·SQL·Secret·Scheduler)
+├─ .github/workflows/       # (예정) CI/CD
 ├─ Taskfile.yml             # 교차 언어 태스크 러너(또는 Makefile/justfile)
 ├─ TOSS-AI-TRADING-INSIGHTS.md
 └─ TECH-STACK.md            # (이 문서)

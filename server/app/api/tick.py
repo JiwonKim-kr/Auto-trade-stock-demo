@@ -128,7 +128,7 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
                       "→ 결정적 폴백(비용 가드)")
         else:
             judge, research = ClaudeJudge(), WebSearchResearch()
-            engine = "claude-fable-5 + web_search"
+            engine = "claude-opus-4-8 + web_search"
     else:
         judge, research = DeterministicJudge(), None
         engine = "ANTHROPIC_API_KEY 미설정 → 결정적 폴백(주문 데모용)"
@@ -261,6 +261,7 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
         "candidates": result.candidates,
         "cost_gated": result.cost_gated,
         "regime": result.regime,
+        "warned": result.warned,
         "forced_exits": result.forced_exits,
         "reconcile": reconcile_report,
         "paper": paper_summary,

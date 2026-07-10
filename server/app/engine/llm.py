@@ -6,9 +6,10 @@
   - **매도(청산) 경로 포함.** 보유 종목은 스크리너와 무관하게 평가 대상에 넣고, 평단가·평가손익·최근
     종가를 컨텍스트에 동봉한다("사기만 하고 못 파는" 구멍 차단).
 
-모델: **Claude Fable 5**(`claude-fable-5`, 사용자 명시). refusal 대비 서버사이드 폴백(→opus-4-8) 기본.
-Fable 5 규약: thinking 항상 켜짐(파라미터 미전송), 샘플링 파라미터/prefill 금지, 30일 데이터 보존 필수(ZDR=400).
-가드레일/킬스위치는 LLM 바깥에서 강제. 클라이언트 주입형이라 API 키 없이도 테스트 가능.
+모델: **Claude Opus 4.8**(`claude-opus-4-8`) — 판단·조사 단일 모델. (Fable 5 에서 전환, 2026-07:
+비용 부담. 서버사이드 폴백은 Fable refusal 대비용이었어 기본 비활성 — 메커니즘은 유지.)
+샘플링 파라미터는 보내지 않는다(결정 재현성·모델 교체 내성). 가드레일/킬스위치는 LLM 바깥에서 강제.
+클라이언트 주입형이라 API 키 없이도 테스트 가능.
 """
 
 from __future__ import annotations
@@ -82,9 +83,9 @@ class CandidateContext:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    model: str = "claude-fable-5"
+    model: str = "claude-opus-4-8"          # 판단 모델(비용 사유로 Fable 5 → Opus 전환)
     fallback_model: str = "claude-opus-4-8"
-    enable_fallback: bool = True
+    enable_fallback: bool = False           # Fable refusal 대비용이었음 — Opus 단일이라 비활성
     effort: str = "high"
     max_tokens: int = 8000
 

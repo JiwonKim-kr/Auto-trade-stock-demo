@@ -1,7 +1,7 @@
 """LLM 엔진 라이브 점검 — ClaudeJudge(판단) + WebSearchResearch(조사)를 실제 API 로 1회씩 검증.
 
 지금까지 LLM 경로는 전부 mock 테스트만 통과 → 실가동 전 라이브 1회 검증이 필요하다:
-  - 판단: claude-fable-5 구조화 출력(action/confidence/rationale) + 폴백(opus-4-8) 경로 도달 여부
+  - 판단: claude-opus-4-8 구조화 출력(action/confidence/rationale)
   - 조사: web_search 도구 호출·인용 수집 (조사 모델은 opus-4-8)
 ⚠️ 유료 API 호출(판단 1콜 + 조사 1콜: 검색 포함 수백 원 수준). 주문과 무관(읽기 전용 점검).
 

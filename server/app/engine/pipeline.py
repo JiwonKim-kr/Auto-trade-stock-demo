@@ -50,6 +50,7 @@ class TickResult:
     regime: dict = field(default_factory=dict)             # 레짐 판정(level·σ·배수) — 미평가 시 빈 dict
     forced_exits: list[dict] = field(default_factory=list)  # 결정적 청산(손절·타임스톱) 발동 내역
     adv20: dict = field(default_factory=dict)               # 심볼→20일 평균 거래대금(float) — 유동성 축적
+    warned: list[str] = field(default_factory=list)         # 종목별 경고로 매수 후보에서 제외된 심볼
 
 
 class DeterministicJudge:
@@ -91,6 +92,7 @@ async def run_tick(
     forced = {f.symbol: f for f in (forced_exits or [])}
 
     adv20: dict[str, float] = {}
+    warned: list[str] = []
 
     def _result(candidates, decisions, orders, universe, note="", cost_gated=None) -> TickResult:
         return TickResult(mode=mode, kill_switch=ks, universe_symbols=universe,
@@ -99,7 +101,7 @@ async def run_tick(
                           cost_gated=cost_gated or [],
                           regime=regime.as_dict() if regime else {},
                           forced_exits=[f.as_dict() for f in forced.values()],
-                          adv20=adv20)
+                          adv20=adv20, warned=warned)
 
     # 1) 수집: 보유 + 워치리스트 → 심볼 union. holdings 는 호출자가 선조회해 주입 가능
     #    (라우트가 리컨실에 이미 조회한 것을 재사용 — 레이트리밋 보호, 이중 조회 방지)
@@ -138,6 +140,24 @@ async def run_tick(
     # 4b) 매수 후보 압축(LLM 비용 가드) — score 상위 N 만 판단에 올린다. 보유는 항상 평가(매도 안전).
     if max_buy_candidates is not None and len(buy_results) > max_buy_candidates:
         buy_results = sorted(buy_results, key=lambda r: r.score, reverse=True)[:max_buy_candidates]
+
+    # 4c) 종목별 경고(warnings) enrich — 투자경고·단기과열 등은 마스터 플래그에 없다(인사이트 §2).
+    #     압축된 매수 후보에만 조회(레이트리밋 절약). 경고 있으면 매수 후보 제외(보수).
+    #     보유 종목은 제외하지 않는다(청산 경로 유지). 응답이 채워진 형태는 미확정(스모크에서
+    #     [] 만 관측) → 비어있지 않으면 경고로 간주, 조회 실패는 통과(미확정 엔드포인트가
+    #     전 매수를 막지 않게 — 종목별 안전은 게이트·가드레일이 fail-closed 로 이미 방어).
+    if buy_results:
+        kept: list[ScreenResult] = []
+        for r in buy_results:
+            try:
+                w = await toss.get_stock_warnings(r.symbol)
+            except Exception:
+                w = []
+            if w:
+                warned.append(r.symbol)
+            else:
+                kept.append(r)
+        buy_results = kept
 
     # 5) 매수여력 — 호출자가 주입 가능(페이퍼 모드: 페이퍼 현금으로 자기일관 사이징)
     if cash_buying_power_krw is not None:

@@ -238,6 +238,21 @@ async def test_tick_max_buy_candidates_compresses_by_score():
     assert {"035420", "035720", "005930"} <= symbols
 
 
+async def test_tick_warned_symbol_excluded_from_buys():
+    # 투자경고 등 종목별 경고 보유 → 매수 후보 제외(보수). 조회 실패/미구현 fake 는 통과(fail-open)
+    class WarnToss(FakeToss):
+        async def get_stock_warnings(self, symbol):
+            return [{"type": "INVESTMENT_WARNING"}] if symbol == "000660" else []
+
+    svc = OrderService(mode=TradingMode.DRY_RUN)
+    res = await run_tick(toss=WarnToss(_rising_candles()), order_service=svc,
+                         watchlist=["000660"], judge=BuyJudge(), now=OPEN_KST,
+                         screen_config=LENIENT)
+    assert res.warned == ["000660"]
+    assert not [o for o in res.orders if o.request.side is Side.BUY]   # 경고 종목 매수 없음
+    assert {d.symbol for d in res.decisions} == {"005930"}             # 보유 평가는 유지
+
+
 async def test_tick_no_symbols_noop():
     class EmptyToss(FakeToss):
         async def get_holdings(self):
