@@ -367,7 +367,21 @@ class TelegramNotifier:
   검사 추가) + `tick.py in_market_hours`. 설정 로드는 lifespan 1회.
 - 테스트: 휴일 주문 차단, 연도 누락 폴백, 평일 정상.
 
-### 3.7 CI + 구조화 로깅
+### 3.7 보안 하드닝 (보안 점검 2026-07-10 정보성 노트 — 배포 전 필수)
+
+점검 결과 HIGH/MEDIUM 0건. 아래 2건은 로컬(127.0.0.1)에선 무해하나 **Cloud Run 배포 시 필수**:
+
+1. **`/docs`·`/openapi.json` 무인증 노출 차단** — FastAPI 기본값이 라우트 맵(킬스위치 경로·
+   `X-API-Key` 헤더명 포함)을 무인증 열람 허용. 운영에선 정찰 보조.
+   구현: `create_app()` 에서 운영 판별(예: `ENV=production` 설정) 시
+   `FastAPI(docs_url=None, redoc_url=None, openapi_url=None)`. 로컬 기본은 유지(개발 편의).
+2. **기본 `API_KEY="dev-local-key"` 기동 거부(fail-closed)** — 현재 경고만 내고 구동됨.
+   배포에서 `API_KEY` 설정 누락 시 문서화된 기본값으로 킬스위치 해제·보유 조회 가능해지는 클래스.
+   구현: lifespan 에서 `ENV=production AND api_key == "dev-local-key"` → RuntimeError 로 기동 중단
+   (§1.1 LIVE-DB 강등과 같은 철학 — 단, 이번엔 강등이 아니라 거부: 조용한 노출이 더 위험).
+   테스트: production+기본키 → 기동 실패, 로컬+기본키 → 경고만.
+
+### 3.8 CI + 구조화 로깅
 
 - `.github/workflows/ci.yml`: push/PR → `pip install -e ".[dev]"` → `ruff check app scripts tests`
   → `pytest -q`. (배포 잡은 인프라 안정 후.)
