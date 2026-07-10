@@ -1,0 +1,13 @@
+# 복사: cp terraform.tfvars.example terraform.tfvars  (tfvars 는 gitignore — 커밋 금지)
+project_id     = "my-gcp-project"
+operator_email = "me@gmail.com"
+image          = "asia-northeast3-docker.pkg.dev/my-gcp-project/toss-trader/server:v1"
+
+# telegram_chat_id = "123456789"
+# toss_account_seq = "1"
+
+# 1단계 검증(토스 IP — README) 통과 후 false 로:
+# scheduler_paused = false
+
+# Cloud SQL 전환 시(LIVE 전 필수 — PLAN §3.0):
+# enable_cloud_sql = true

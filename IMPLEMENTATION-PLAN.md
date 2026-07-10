@@ -303,15 +303,15 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 | W2 ✅ | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
 | W3 ✅ | §3.3 OIDC 검증 | 코드 |
 | W4 ✅ | §3.4 PG advisory lock | 코드 |
-| W5 | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정) | 빌드 |
-| W6 | §3.2 Terraform + 시크릿 주입(운영자) + 배포 → **1단계 검증(토스 IP)** → Scheduler 활성화 | 인프라 |
+| W5 ✅ | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정)·JSON 로깅 | 빌드 |
+| W6 🔶 | §3.2 Terraform **작성 완료** — apply·시크릿 주입·배포·**1단계 검증(토스 IP)**·Scheduler 활성화는 운영자([infra/README.md](infra/README.md) 절차) | 인프라 |
 | W7 | §3.10 조사 캐시(LLM 비용 절감 — 권장) | 코드 |
 
 운영자 준비물(W6 전): GCP 프로젝트+결제 계정, `gcloud` CLI 인증, **Supabase 무료 프로젝트
 생성(리전 서울)**, 시크릿 값 6종(토스 2·Anthropic·API_KEY·DATABASE_URL(Supabase 세션 풀러)·
 텔레그램 토큰), KRX 2026 휴장일 공지 검증(§3.6 잔여).
 
-### 3.1 Dockerfile (+ .dockerignore)
+### 3.1 ✅ Dockerfile (+ .dockerignore) — 구현·컨테이너 스모크 통과
 
 ```dockerfile
 # server/Dockerfile
@@ -338,7 +338,7 @@ scripts 는 이미지에 불필요(진단은 로컬). **주의**: `.env` 류가 
 - **빌드 스모크**: `docker build` 후 `docker run -e API_KEY=test -p 8080:8080` → `/health` 200 확인
   (DB·토스 미설정 상태로도 기동해야 한다 — 기존 옵셔널 설계 그대로).
 
-### 3.2 Terraform 리소스 명세 (`infra/`)
+### 3.2 ✅ Terraform 리소스 명세 (`infra/`) — 작성됨. apply·시크릿 주입은 운영자([infra/README.md](infra/README.md))
 
 | 리소스 | 필수 설정 | 함정 |
 |---|---|---|
@@ -470,7 +470,7 @@ class TelegramNotifier:
    (§1.1 LIVE-DB 강등과 같은 철학 — 단, 이번엔 강등이 아니라 거부: 조용한 노출이 더 위험).
    테스트: production+기본키 → 기동 실패, 로컬+기본키 → 경고만.
 
-### 3.8 CI + 구조화 로깅
+### 3.8 ✅ CI + 구조화 로깅 (구현됨 — .github/workflows/ci.yml(3.12 고정)·core/logging_setup.py)
 
 - `.github/workflows/ci.yml`: push/PR → `pip install -e ".[dev]"` → `ruff check app scripts tests`
   → `pytest -q`. (배포 잡은 인프라 안정 후.)

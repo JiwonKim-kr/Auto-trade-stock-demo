@@ -31,3 +31,11 @@ target/
 Thumbs.db
 .idea/
 .vscode/
+
+# ── Terraform (infra/) ──
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+.terraform.lock.hcl
