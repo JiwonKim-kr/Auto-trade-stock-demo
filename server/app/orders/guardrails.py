@@ -29,6 +29,7 @@ class GuardrailConfig(BaseModel):
     market_open: time = time(9, 0)                      # KST
     market_close: time = time(15, 30)                   # KST
     enforce_market_hours: bool = True
+    holidays: frozenset[str] = frozenset()              # KRX 휴장일(YYYY-MM-DD, 주말 외)
 
 
 @dataclass
@@ -77,6 +78,8 @@ def guard_market_hours(order: OrderRequest, ctx: GuardrailContext, cfg: Guardrai
     n = ctx.now.astimezone(KST)
     if n.weekday() >= 5:
         return Violation("MARKET_CLOSED", f"주말(KST {n:%a}) — KRX 휴장")
+    if n.date().isoformat() in cfg.holidays:
+        return Violation("MARKET_CLOSED", f"공휴일({n.date().isoformat()}) — KRX 휴장")
     if not (cfg.market_open <= n.time() <= cfg.market_close):
         return Violation(
             "MARKET_CLOSED",

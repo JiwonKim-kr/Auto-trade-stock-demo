@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from app.api.routes import router
 from app.api.tick import tick_loop
+from app.core.calendar import load_holidays
 from app.core.config import load_trading_mode
 from app.core.notify import AlertGate, NullNotifier, TelegramNotifier
 from app.core.settings import get_settings
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.trading_mode = mode
+    app.state.holidays = load_holidays(settings.krx_holidays_path)   # KRX 공휴일(주말 외)
     app.state.order_service = OrderService(
         mode=mode,
         config=GuardrailConfig(
@@ -46,6 +48,7 @@ async def lifespan(app: FastAPI):
             max_positions=settings.max_positions,
             per_symbol_max_weight=settings.per_symbol_max_weight,
             enforce_market_hours=settings.enforce_market_hours,
+            holidays=app.state.holidays,
         ),
         circuit_breaker=CircuitBreaker(
             CircuitBreakerConfig(

@@ -31,6 +31,7 @@ from app.db.models import (
     PaperStateRow,
     PositionRow,
     PositionSnapshotRow,
+    ReportLogRow,
     SymbolStatsRow,
     TickRow,
 )
@@ -328,6 +329,47 @@ class Repository:
             row.kill_switch = kill_switch
             row.breaker_json = json.dumps(breaker, ensure_ascii=False)
             row.updated_at = datetime.now(timezone.utc)
+
+    # ── 보고서 (휴장일 자동 생성 — 기간 조회 + 중복 방지) ───────────────────────
+    async def last_report_period_end(self) -> str | None:
+        async with self._sm() as s:
+            row = (await s.execute(
+                select(ReportLogRow).order_by(ReportLogRow.id.desc()).limit(1))).scalars().first()
+            return row.period_end if row else None
+
+    async def record_report(self, period_end: str, path: str) -> None:
+        async with self._sm() as s, s.begin():
+            s.add(ReportLogRow(generated_at=datetime.now(timezone.utc),
+                               period_end=period_end, path=path))
+
+    async def load_period_activity(self, since_trade_date: str | None) -> dict:
+        """기간(직전 보고 이후) 판단/주문/감사/틱 통계 — 보고서 렌더 입력."""
+        async with self._sm() as s:
+            tick_q = select(TickRow)
+            dec_q = select(DecisionRow, TickRow.trade_date).join(
+                TickRow, DecisionRow.tick_id == TickRow.id)
+            ord_q = select(OrderRow)
+            aud_q = select(AuditRow)
+            if since_trade_date:
+                tick_q = tick_q.where(TickRow.trade_date > since_trade_date)
+                dec_q = dec_q.where(TickRow.trade_date > since_trade_date)
+                ord_q = ord_q.where(OrderRow.trade_date > since_trade_date)
+                since_dt = datetime.fromisoformat(since_trade_date + "T23:59:59+09:00")
+                aud_q = aud_q.where(AuditRow.ts > since_dt.astimezone(timezone.utc))
+            ticks = (await s.execute(tick_q)).scalars().all()
+            decs = (await s.execute(dec_q)).all()
+            orders = (await s.execute(ord_q)).scalars().all()
+            audits = (await s.execute(aud_q)).scalars().all()
+        return {
+            "ticks": [{"cost_gated_json": t.cost_gated_json, "regime_json": t.regime_json}
+                      for t in ticks],
+            "decisions": [{"action": d.action, "symbol": d.symbol, "confidence": d.confidence,
+                           "rationale": d.rationale} for d, _ in decs],
+            "orders": [{"side": o.side, "symbol": o.symbol, "quantity": o.quantity,
+                        "price": o.price, "status": o.status} for o in orders],
+            "audits": [{"ts": str(_utc(a.ts)), "actor": a.actor, "action": a.action}
+                       for a in audits],
+        }
 
     # ── 감사 (컨트롤플레인 이벤트) ─────────────────────────────────────────────
     async def audit(self, actor: str, action: str, payload: dict | None = None) -> None:

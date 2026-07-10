@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     notify_telegram_bot_token: str | None = None
     notify_telegram_chat_id: str | None = None
 
+    # 휴장일 자동 보고서 저장 폴더 + KRX 휴장일 파일(미설정 시 data/krx_holidays.json)
+    reports_dir: str = "reports"
+    krx_holidays_path: str | None = None
+
     # DB 영속화 (미설정 시 인메모리 — 재시작 시 원장/엔진 상태 소실. 운영은 필수)
     # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)
     database_url: str | None = None

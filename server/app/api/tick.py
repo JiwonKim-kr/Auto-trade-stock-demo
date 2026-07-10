@@ -273,7 +273,9 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
 def in_market_hours(now: datetime, svc: OrderService) -> bool:
     cfg = svc.config
     n = now.astimezone(KST)
-    return n.weekday() < 5 and cfg.market_open <= n.time() <= cfg.market_close
+    if n.weekday() >= 5 or n.date().isoformat() in cfg.holidays:   # 주말·KRX 공휴일
+        return False
+    return cfg.market_open <= n.time() <= cfg.market_close
 
 
 async def tick_loop(app: FastAPI) -> None:
@@ -286,7 +288,11 @@ async def tick_loop(app: FastAPI) -> None:
             if app.state.toss_client is None:
                 continue                                        # 자격증명 없음 — 대기만
             svc: OrderService = app.state.order_service
-            if svc.config.enforce_market_hours and not in_market_hours(datetime.now(KST), svc):
+            now = datetime.now(KST)
+            if svc.config.enforce_market_hours and not in_market_hours(now, svc):
+                from app.api.report import maybe_generate_report   # 순환 import 회피(지연)
+
+                await maybe_generate_report(app, now)           # 휴장일 자동 보고서(중복 방지 내장)
                 continue                                        # 장외 — LLM/API 비용 절약
             result = await execute_tick(app)
             logger.info("자동 틱 완료: tick_id=%s candidates=%s note=%s",

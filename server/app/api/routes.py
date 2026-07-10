@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key
+from app.api.report import generate_report
 from app.api.tick import execute_tick, reconcile_and_enforce
 from app.engine.evaluation import evaluate
 from app.orders.guardrails import KST
@@ -140,6 +141,12 @@ async def evaluation_check(request: Request) -> dict:
 async def tick(request: Request, toss: TossClient = Depends(get_toss_client)) -> dict:
     """거래 틱 1회(조립·실행은 api/tick.py — 내장 루프와 공유). 운영은 OIDC 권장(TODO)."""
     return await execute_tick(request.app)
+
+
+@router.post("/internal/report", dependencies=[Depends(require_api_key)])
+async def report_now(request: Request) -> dict:
+    """운용 보고서 수동 생성(중복 방지 무시). 자동은 내장 루프가 휴장일에 1회."""
+    return await generate_report(request.app, force=True)
 
 
 router.include_router(api)

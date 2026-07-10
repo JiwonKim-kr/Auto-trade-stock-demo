@@ -186,6 +186,17 @@ class CandleCacheRow(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class ReportLogRow(Base):
+    """휴장일 자동 보고서 이력 — 중복 생성 방지 마커 + 파일 경로."""
+
+    __tablename__ = "report_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[str] = mapped_column(Text)       # 보고가 커버한 마지막 거래일(KST)
+    path: Mapped[str] = mapped_column(Text)
+
+
 class EngineStateRow(Base):
     """엔진 상태 단일행(id=1) — 킬스위치·서킷브레이커가 재시작에도 생존."""
 
