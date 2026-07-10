@@ -10,18 +10,22 @@
             GET  /api/orders                  주문 원장(의도/전송 결과)
             GET  /api/reconcile               리컨실 수동 점검(기준선 미이동 — DB 필요)
             GET  /api/evaluation              페이퍼 성과 평가(Sharpe/MDD/벤치마크·표본 게이트 — DB 필요)
+            GET  /api/reports                 보고서 목록(DB 정본 — §3.9)
+            GET  /api/reports/{period_end}    보고서 본문(markdown)
             POST /internal/tick               거래 틱(조립은 api/tick.py). 운영은 OIDC 권장(TODO)
+            POST /internal/report?force=      보고서 생성(기본 false=휴장일에만 — Scheduler 잡 ②)
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key
-from app.api.report import generate_report
+from app.api.report import generate_report, scheduled_report
 from app.api.tick import execute_tick, reconcile_and_enforce
 from app.engine.evaluation import evaluate
 from app.orders.guardrails import KST
@@ -163,10 +167,34 @@ async def tick(request: Request, toss: TossClient = Depends(get_toss_client)) ->
     return await execute_tick(request.app)
 
 
+@api.get("/reports")
+async def reports_list(request: Request):
+    """보고서 목록(최신순). 본문은 DB 정본(§3.9 — 컨테이너 FS 휘발 대응)."""
+    repo = request.app.state.repo
+    if repo is None:
+        return {"status": "DISABLED", "reason": "DATABASE_URL 미설정 — 보고서는 DB 필요"}
+    return await repo.list_reports()
+
+
+@api.get("/reports/{period_end}")
+async def report_body(period_end: str, request: Request) -> PlainTextResponse:
+    """보고서 본문(markdown)."""
+    repo = request.app.state.repo
+    if repo is None:
+        raise HTTPException(503, "DATABASE_URL 미설정 — 보고서는 DB 필요")
+    body = await repo.load_report_body(period_end)
+    if body is None:
+        raise HTTPException(404, f"보고서 없음: {period_end}")
+    return PlainTextResponse(body, media_type="text/markdown; charset=utf-8")
+
+
 @router.post("/internal/report", dependencies=[Depends(require_api_key)])
-async def report_now(request: Request) -> dict:
-    """운용 보고서 수동 생성(중복 방지 무시). 자동은 내장 루프가 휴장일에 1회."""
-    return await generate_report(request.app, force=True)
+async def report_now(request: Request, force: bool = False) -> dict:
+    """보고서 생성. force=true 수동 즉시(중복 무시) · 기본 false 는 휴장일에만 실생성
+    — Scheduler 잡 ②가 매일 호출해도 거래일/기생성은 스킵(§3.9)."""
+    if force:
+        return await generate_report(request.app, force=True)
+    return await scheduled_report(request.app, datetime.now(KST))
 
 
 router.include_router(api)

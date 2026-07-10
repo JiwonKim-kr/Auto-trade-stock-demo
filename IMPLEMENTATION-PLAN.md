@@ -300,7 +300,7 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 | 순번 | 내용 | 성격 |
 |---|---|---|
 | W1 ✅ | §3.7 하드닝(`APP_ENV=production` 도입·docs 차단·기본키 기동 거부) + §1.3 CB 수동 리셋 엔드포인트(원격 운용 필수 도구) | 코드 |
-| W2 | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
+| W2 ✅ | §3.9 보고서 클라우드 영속 + maybe 트리거 경로 | 코드 |
 | W3 | §3.3 OIDC 검증 | 코드 |
 | W4 | §3.4 PG advisory lock | 코드 |
 | W5 | §3.1 Dockerfile(+컨테이너 스모크) + §3.8 CI(3.12 고정) | 빌드 |
@@ -478,7 +478,7 @@ class TelegramNotifier:
   — 의존성 추가 없이). 필드: ts·level·logger·message·tick_id(있으면). Cloud Logging 이 severity 를
   집도록 `severity` 필드 포함.
 
-### 3.9 보고서 클라우드 영속 — 본문 DB 저장 + maybe 트리거 라우트 (재검토 발견 §3.0-2·3)
+### 3.9 ✅ 보고서 클라우드 영속 — 본문 DB 저장 + maybe 트리거 라우트 (구현됨)
 
 **문제 2건**: (a) `generate_report` 가 markdown 을 컨테이너 FS 에만 쓰고 DB 엔 경로만 기록
 — Cloud Run FS 는 휘발이라 본문 유실(비루트 권한으로 mkdir 실패 → 500 가능성도).

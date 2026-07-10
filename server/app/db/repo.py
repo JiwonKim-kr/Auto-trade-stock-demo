@@ -337,10 +337,29 @@ class Repository:
                 select(ReportLogRow).order_by(ReportLogRow.id.desc()).limit(1))).scalars().first()
             return row.period_end if row else None
 
-    async def record_report(self, period_end: str, path: str) -> None:
+    async def record_report(self, period_end: str, path: str, body: str | None = None) -> None:
         async with self._sm() as s, s.begin():
             s.add(ReportLogRow(generated_at=datetime.now(timezone.utc),
-                               period_end=period_end, path=path))
+                               period_end=period_end, path=path, body=body))
+
+    async def list_reports(self, limit: int = 50) -> list[dict]:
+        """보고서 목록(최신순) — 본문 제외(용량), 본문은 load_report_body."""
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(ReportLogRow).order_by(ReportLogRow.id.desc()).limit(limit)
+            )).scalars().all()
+            return [{"period_end": r.period_end,
+                     "generated_at": _utc(r.generated_at).isoformat(),
+                     "has_body": r.body is not None} for r in rows]
+
+    async def load_report_body(self, period_end: str) -> str | None:
+        """본문(markdown) 정본 — 같은 period_end 가 여럿이면(force 재생성) 최신 것."""
+        async with self._sm() as s:
+            row = (await s.execute(
+                select(ReportLogRow).where(ReportLogRow.period_end == period_end)
+                .order_by(ReportLogRow.id.desc()).limit(1)
+            )).scalars().first()
+            return row.body if row else None
 
     async def load_period_activity(self, since_trade_date: str | None) -> dict:
         """기간(직전 보고 이후) 판단/주문/감사/틱 통계 — 보고서 렌더 입력."""

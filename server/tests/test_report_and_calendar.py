@@ -8,7 +8,7 @@ from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
 
-from app.api.report import generate_report, maybe_generate_report
+from app.api.report import generate_report, maybe_generate_report, scheduled_report
 from app.core.calendar import is_trading_day, load_holidays
 from app.core.settings import Settings
 from app.db.repo import Repository
@@ -93,7 +93,7 @@ async def test_report_route_writes_file_and_dedupes(tmp_path):
         app.state.repo = repo
         app.state.settings = Settings(reports_dir=str(tmp_path / "reports"))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-            r = await c.post("/internal/report", headers=KEY)
+            r = await c.post("/internal/report", headers=KEY, params={"force": "true"})
         body = r.json()
         assert Path(body["path"]).is_file() and body["period_end"] == "2026-07-02"
         again = await generate_report(app, force=False)            # 새 데이터 없음 → 스킵
@@ -120,3 +120,64 @@ async def test_report_skips_without_data(tmp_path):
         app.state.repo = repo
         result = await generate_report(app, force=True)
     assert "skipped" in result
+
+
+# ── §3.9 클라우드 영속 — 본문 DB 정본 · best-effort 파일 · maybe 라우트 ──────────
+async def test_report_body_persisted_even_if_file_write_fails(tmp_path):
+    repo = await make_repo(tmp_path)
+    await _seed_equity(repo)
+    blocker = tmp_path / "blocked"
+    blocker.write_text("파일 — reports_dir 자리를 차지해 mkdir 실패 유도", encoding="utf-8")
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.repo = repo
+        app.state.settings = Settings(reports_dir=str(blocker))    # mkdir → OSError
+        result = await generate_report(app, force=True)
+        assert result["period_end"] == "2026-07-02"
+        assert result["path"] is None                              # 파일은 실패, 생성은 성공
+        body = await repo.load_report_body("2026-07-02")
+        assert body and "페이퍼 운용 보고서" in body                # DB 정본
+
+
+async def test_scheduled_report_skips_trading_day(tmp_path):
+    repo = await make_repo(tmp_path)
+    await _seed_equity(repo)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.repo = repo
+        app.state.settings = Settings(reports_dir=str(tmp_path / "reports"))
+        r1 = await scheduled_report(app, datetime(2026, 7, 3, 10, 0, tzinfo=KST))   # 금(거래일)
+        assert "거래일" in r1["skipped"]
+        r2 = await scheduled_report(app, datetime(2026, 7, 4, 10, 0, tzinfo=KST))   # 토(휴장)
+        assert r2["period_end"] == "2026-07-02"
+
+
+async def test_reports_api_list_and_body(tmp_path):
+    repo = await make_repo(tmp_path)
+    await _seed_equity(repo)
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        app.state.repo = repo
+        app.state.settings = Settings(reports_dir=str(tmp_path / "reports"))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            await c.post("/internal/report", headers=KEY, params={"force": "true"})
+            lst = (await c.get("/api/reports", headers=KEY)).json()
+            assert lst[0]["period_end"] == "2026-07-02" and lst[0]["has_body"] is True
+            r = await c.get("/api/reports/2026-07-02", headers=KEY)
+            assert r.status_code == 200 and "페이퍼 운용 보고서" in r.text
+            assert (await c.get("/api/reports/1999-01-01", headers=KEY)).status_code == 404
+
+
+async def test_init_db_migrates_legacy_report_log(tmp_path):
+    """create_all 은 기존 테이블을 안 바꾼다 — body 없는 구버전 DB 에 컬럼이 추가되는지."""
+    from sqlalchemy import text as sql_text
+
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path}/legacy.db")
+    async with engine.begin() as conn:
+        await conn.execute(sql_text(
+            "CREATE TABLE report_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "generated_at DATETIME, period_end TEXT, path TEXT)"))
+    await init_db(engine)                                          # 추가 컬럼 마이그레이션
+    repo = Repository(make_sessionmaker(engine))
+    await repo.record_report("2026-07-02", "", body="본문")
+    assert await repo.load_report_body("2026-07-02") == "본문"

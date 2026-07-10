@@ -187,14 +187,19 @@ class CandleCacheRow(Base):
 
 
 class ReportLogRow(Base):
-    """휴장일 자동 보고서 이력 — 중복 생성 방지 마커 + 파일 경로."""
+    """휴장일 자동 보고서 이력 — 중복 생성 방지 마커 + 본문(§3.9: DB 가 정본).
+
+    Cloud Run 컨테이너 FS 는 휘발이라 파일은 유실될 수 있다 → body 가 정본,
+    path 는 best-effort 파일 저장 결과(실패 시 "").
+    """
 
     __tablename__ = "report_log"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[str] = mapped_column(Text)       # 보고가 커버한 마지막 거래일(KST)
-    path: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)             # 파일 저장 실패(비루트·휘발 FS) 시 ""
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)   # markdown 본문(정본)
 
 
 class EngineStateRow(Base):
