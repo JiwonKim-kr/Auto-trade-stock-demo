@@ -86,7 +86,7 @@ class LLMConfig:
     model: str = "claude-opus-4-8"          # 판단 모델(비용 사유로 Fable 5 → Opus 전환)
     fallback_model: str = "claude-opus-4-8"
     enable_fallback: bool = False           # Fable refusal 대비용이었음 — Opus 단일이라 비활성
-    effort: str = "high"
+    effort: str = "medium"    # 2026-07-11 비용 — 테스트 단계에서 high 와 A/B 후 확정(JUDGE_EFFORT)
     max_tokens: int = 8000
 
 

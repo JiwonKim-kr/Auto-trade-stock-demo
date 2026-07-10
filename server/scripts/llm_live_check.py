@@ -2,7 +2,7 @@
 
 지금까지 LLM 경로는 전부 mock 테스트만 통과 → 실가동 전 라이브 1회 검증이 필요하다:
   - 판단: claude-opus-4-8 구조화 출력(action/confidence/rationale)
-  - 조사: web_search 도구 호출·인용 수집 (조사 모델은 opus-4-8)
+  - 조사: web_search 도구 호출·인용 수집 (조사 모델은 claude-sonnet-5)
 ⚠️ 유료 API 호출(판단 1콜 + 조사 1콜: 검색 포함 수백 원 수준). 주문과 무관(읽기 전용 점검).
 
 실행: python server/scripts/llm_live_check.py   (.env 의 ANTHROPIC_API_KEY 필요)
@@ -59,13 +59,13 @@ async def main() -> int:
         return 1
     ctx = sample_context()
 
-    print("=== 1) 조사 (opus-4-8 + web_search) ===")
+    print("=== 1) 조사 (claude-sonnet-5 + web_search) ===")
     note = await WebSearchResearch().research(ctx)
     print(f"요약: {note.summary[:300]}")
     print(f"출처 {len(note.sources)}건: {note.sources[:3]}")
     ctx.research = note
 
-    print("\n=== 2) 판단 (claude-fable-5, 구조화 출력) ===")
+    print("\n=== 2) 판단 (claude-opus-4-8, 구조화 출력) ===")
     decision = await ClaudeJudge().decide(ctx)
     print(f"action={decision.action.value}  confidence={decision.confidence:.2f}")
     print(f"rationale: {decision.rationale}")

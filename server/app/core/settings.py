@@ -35,7 +35,11 @@ class Settings(BaseSettings):
 
     # AI 엔진 (없으면 틱은 결정적 폴백 판단기 사용 — 주문 데모 가능)
     anthropic_api_key: str | None = None
-    research_top_n: int = 5
+    # 조사 대상 = 상위 N 후보(하위는 지표만으로 판단 — 스크리너·게이트가 이미 거름). 2026-07-11 비용 5→3
+    research_top_n: int = 3
+    # 판단 output_config effort. 비용 절감 기본 medium — 테스트 단계에서 high 와 A/B 후 확정
+    # (되돌리기: JUDGE_EFFORT=high). 2026-07-11 비용 절감 세트
+    judge_effort: str = "medium"
     # LLM 비용 가드: 틱당 매수 후보 상한(score 상위 N — 보유는 항상 평가) + 일일 판단 수 상한
     # (상한 도달 시 그날은 결정적 폴백으로 강등 — DB 필요, 근사 카운트)
     judge_top_n: int = 10

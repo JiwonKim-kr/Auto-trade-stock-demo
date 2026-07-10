@@ -16,7 +16,7 @@
 | 데스크톱(눈) | **Tauri 2 + React/TS** | 경량 셸, 얇은 클라이언트 |
 | 데이터베이스 | **Cloud SQL (PostgreSQL 16)** | 주문/포지션/감사 관계형 |
 | 클라우드 | **GCP** (Cloud Run·Artifact Registry·Secret Manager·Cloud Scheduler) | 인사이트 §6 그대로 |
-| AI | **Claude `claude-opus-4-8`** (판단·조사 단일) | Fable 5→비용 사유 전환(2026-07). output_config 구조화 출력·프롬프트 캐싱 |
+| AI | **판단 `claude-opus-4-8` · 조사 `claude-sonnet-5`** | Fable 5→비용 전환(2026-07)·조사 Sonnet 은 2026-07-11 절감 세트. output_config 구조화 출력·프롬프트 캐싱 |
 | 리전 | **`asia-northeast3`(서울)** | 프로토타입과 동일, KRX/토스 근접 |
 | IaC / CI | **Terraform + GitHub Actions** | 재현 가능한 인프라·배포 |
 
@@ -65,7 +65,7 @@
 | 데이터 검증/설정 | **Pydantic v2 + pydantic-settings** | 토스 `{result}` 언래핑·DTO·env 검증 |
 | ORM / 마이그레이션 | **SQLAlchemy 2.0 (async) + Alembic**, 드라이버 **asyncpg** | 관계형·트랜잭션·리컨실 쿼리 |
 | 퀀트/지표 | **순수 파이썬**(indicators.py — SMA·RSI Wilder) | 의존성 최소. pandas-ta 는 지표 확장 시 도입(future) |
-| LLM | **anthropic** (Python SDK), `claude-opus-4-8` | output_config 구조화 출력, 프롬프트 캐싱 |
+| LLM | **anthropic** (Python SDK), 판단 `claude-opus-4-8`·조사 `claude-sonnet-5` | output_config 구조화 출력, 프롬프트 캐싱 |
 | 의존성/빌드 | **pip**(현행) | uv 는 배포(Docker) 단계에서 재검토 |
 | 린트/포맷/타입 | **ruff** (lint+format) + **mypy** | |
 | 테스트 | **pytest + pytest-asyncio + respx**(httpx 목) | 토스 응답 픽스처로 매핑 회귀 방지 |
@@ -142,7 +142,7 @@ REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 
         │  ── 결정적 기술지표 스크리너 (순수 파이썬 SMA/RSI)  →  score 상위 N 압축
         │      └─ [warnings enrich: 투자경고 등 종목별 경고 → 매수 후보 제외]
         ▼
-   후보(매수 후보 + 보유) ── 조사(Claude web_search grounded 브리프, 상위 N)
+   후보(매수 후보 + 보유) ── 조사(Sonnet 5 web_search grounded 브리프, 상위 N·24h 캐시)
         │  ── Claude claude-opus-4-8 (output_config JSON 구조화 출력)
         │      → BUY/SELL/HOLD + confidence + 근거 텍스트   ★ 사이징 안 함(결정적 allocator 가)
         ▼
@@ -152,7 +152,8 @@ REAL(float)로 저장돼 테스트/운영 정밀도가 갈린다. 합산(일일 
 
 - **구조화 출력**: `output_config`(json_schema)로 `{action, symbol, confidence, rationale}` 강제
   — **사이징(size)은 스키마에서 의도적으로 제외**(LLM 은 방향+확신만, §7 ADR). **시스템 프롬프트
-  캐싱**으로 비용 절감. 모델은 `claude-opus-4-8` 단일(판단·조사 — Fable 5 는 비용 부담으로 2026-07 전환,
+  캐싱**으로 비용 절감. 모델: 판단 `claude-opus-4-8`(effort medium — 테스트 단계 A/B 후 확정) ·
+  조사 `claude-sonnet-5`(검색·요약 — 2026-07-11 비용 절감 세트. Fable 5 는 비용 부담으로 2026-07 전환,
   refusal 폴백 메커니즘은 유지하되 기본 비활성).
 - **근거 전수 로깅**: 모든 결정의 rationale을 `decisions`에 저장(감사·사후분석).
 - **가드레일은 LLM 바깥**: 진입 전(후보 압축)·주문 직전 2회 결정적 검사. LLM은 가드레일을 통과한

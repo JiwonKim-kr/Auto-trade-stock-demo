@@ -22,7 +22,7 @@ from app.db.lock import pg_tick_lock
 from app.db.repo import trade_date_kst
 from app.engine.costs import CostConfig, EntryGate, EntryGateConfig
 from app.engine.exits import ExitConfig, evaluate_exits
-from app.engine.llm import ClaudeJudge
+from app.engine.llm import ClaudeJudge, LLMConfig
 from app.engine.paper import PaperPortfolio
 from app.engine.pipeline import DeterministicJudge, run_tick
 from app.engine.regime import RegimeConfig
@@ -135,8 +135,10 @@ async def _execute_tick_locked(app: FastAPI) -> dict:
             engine = (f"일일 LLM 판단 상한({settings.daily_llm_decision_cap}) 도달 "
                       "→ 결정적 폴백(비용 가드)")
         else:
-            judge, research = ClaudeJudge(), WebSearchResearch()
-            engine = "claude-opus-4-8 + web_search"
+            judge = ClaudeJudge(config=LLMConfig(effort=settings.judge_effort))
+            research = WebSearchResearch()
+            engine = (f"판단 claude-opus-4-8(effort={settings.judge_effort}) · "
+                      "조사 claude-sonnet-5 + web_search")
     else:
         judge, research = DeterministicJudge(), None
         engine = "ANTHROPIC_API_KEY 미설정 → 결정적 폴백(주문 데모용)"

@@ -17,7 +17,7 @@
 | 토스증권 Open API 키 | 토스증권 **PC 웹** → 설정 → Open API → 키 발급 | 필수 |
 | Anthropic API 키 | console.anthropic.com | 선택 — 없으면 LLM 대신 결정적 폴백(관찰용) |
 
-판단·조사 모델은 `claude-opus-4-8` 단일(Fable 5 는 비용 부담으로 전환, 2026-07).
+판단 모델은 `claude-opus-4-8`(effort medium), 조사는 `claude-sonnet-5`+web_search 24h 캐시(비용 절감 세트 2026-07-11. Fable 5 는 비용 부담으로 전환, 2026-07).
 
 ## 2. 설치
 

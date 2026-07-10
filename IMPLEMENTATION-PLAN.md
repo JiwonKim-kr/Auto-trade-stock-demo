@@ -253,7 +253,7 @@ class CachingToss:
 **최종 아키텍처** (asia-northeast3 — 서울. 국내 증권사 API 의 해외 IP 차단 관행 대비):
 ```
 Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min=0/max=1) ──▶ Supabase PG(세션 풀러)
-  ① tick:   */5 9-15 * * 1-5 (Asia/Seoul)  → /internal/tick                       (AWS 서울 — §아래 DB 결정)
+  ① tick:   */10 9-15 * * 1-5 (Asia/Seoul) → /internal/tick                       (AWS 서울 — §아래 DB 결정)
   ② report: 30 16 * * *      (Asia/Seoul)  → /internal/report?force=false (휴장일에만 실생성 — §3.9)
 아웃바운드: 토스 API · Anthropic · Telegram
 ```
@@ -274,16 +274,20 @@ Cloud Scheduler(잡 2개, OIDC) ──POST──▶ Cloud Run(request-based, min
 
 | 항목 | 산정 근거 | 월 예상 |
 |---|---|---|
-| Cloud Run | 1 vCPU/1GiB request-based. 틱 ~1,700회/월 × 1–8분(LLM 대기 포함 과금) − 무료구간 180k vCPU-s | **$2–12** |
+| Cloud Run | 1 vCPU/1GiB request-based. 틱 ~850회/월(10분 간격) × 1–8분(LLM 대기 포함 과금) − 무료구간 | **$1–8** |
 | DB — Supabase 무료 티어 | AWS 서울(ap-northeast-2)·500MB·세션 풀러 (**채택 — 아래 결정**) | **$0** |
 | Scheduler·Artifact Registry·Secret Manager·Logging·egress | 잡 2개(3개까지 무료)·이미지<0.5GB·시크릿 6·로그<50GiB | **$0–1** |
-| **GCP 소계** | (Cloud SQL 전환 시 +$11–13) | **≈ $2–13** |
-| Anthropic 판단 (Opus, 프롬프트 캐시) | 실질 150–400콜/일(상한 400) × 입력 ~3k/출력 ~0.3k tok | **$40–120** |
-| Anthropic 조사 (web_search) | 캐시 없으면 최대 ~390콜/일 — **비용 지배 항목** | **$80–300** → §3.10 캐시 도입 시 **$10–40** |
-| **총계 (§3.10 포함)** | | **≈ $50–170/월** |
+| **GCP 소계** | (Cloud SQL 전환 시 +$11–13) | **≈ $1–9** |
+| Anthropic 판단 (Opus·effort medium·프롬프트 캐시) | 실질 75–200콜/일(10분 틱) | **$15–60** |
+| Anthropic 조사 (Sonnet + web_search) | §3.10 캐시 + 상위 3 + 검색 ≤2회 (원래 최대 390콜/일 $80–300 이던 지배 항목) | **$5–20** |
+| **총계** | | **≈ $20–90/월** |
 
-- LLM 비용은 클라우드 이전과 무관하게 로컬에서도 동일하게 발생 — 절감 노브:
-  §3.10(최우선) → `TICK_INTERVAL` 5→10분(전체 ½) → `RESEARCH_TOP_N`/`JUDGE_TOP_N` 축소.
+- **비용 절감 세트(2026-07-11 적용 — 사용자 결정 "테스트 단계 검증 후 되돌릴 수 있는 건 지금 다")**:
+  ① 조사 `max_searches` 4→2 ② `RESEARCH_TOP_N` 5→3 ③ 틱 5→10분(검증 후 `*/5` 복귀 검토 —
+  강제청산 감지 지연 최대 10분이 유일한 대가) ④ 판단 `effort` high→medium(**테스트 단계에서
+  캘리브레이션으로 high 와 A/B 후 확정** — `JUDGE_EFFORT=high` 로 복귀) ⑤ 조사 모델 Opus→**Sonnet 5**
+  (검색·요약 작업 — 판단은 Opus 유지). 입출력 영어 전환은 검토 후 기각(검색 단가는 토큰 무관·
+  검색 결과가 어차피 한국어·시스템 프롬프트는 캐시됨 → 실효 5–10%뿐, 감사 가능성 손실이 더 큼).
 - **DB 결정(2026-07-11)**: Supabase 무료 티어 채택(비용), 단 **Cloud SQL 전환을 상시 대비**:
   - 코드는 `DATABASE_URL` 문자열 하나로 추상 — 전환 시 코드 변경 0. Terraform 에는 Cloud SQL
     모듈을 `var.enable_cloud_sql=false` 스텁으로 유지(§3.2), 전환 = 변수 토글 + 시크릿 교체.
@@ -347,7 +351,7 @@ scripts 는 이미지에 불필요(진단은 로컬). **주의**: `.env` 류가 
 | `google_sql_database_instance` — **스텁**(`var.enable_cloud_sql=false`, 기본 미생성) | 전환 대비만: PG16, `asia-northeast3`, db-f1-micro 급, 삭제 보호 on | DB 는 Supabase(§3.0 결정). 전환 = 변수 토글 + DATABASE_URL 시크릿 교체 |
 | `google_cloud_run_v2_service` | env: secret refs + `APP_ENV=production`·`REPORTS_DIR=/tmp/reports`·`TICK_INTERVAL_SEC=0`. `min_instance_count=0`, **`max_instance_count=1`**(§3.4 전까지 동시성 상한이 곧 안전장치), **timeout 900s**(틱이 수 분 — §3.0-4) | DB 연결: DATABASE_URL 시크릿 직결(Supabase 세션 풀러 — §3.0 함정 참조). Cloud SQL 전환 시 `run.googleapis.com/cloudsql-instances` annotation + unix socket 으로 교체. **`--no-allow-unauthenticated`** — 플랫폼 IAM 이 1차 방벽(invoker = scheduler-sa + 운영자 계정만), 앱 인증(OIDC/API키)은 2차 |
 | `google_service_account` ×2 | run-sa(Secret accessor·SQL client), scheduler-sa(run invoker) | 최소 권한 |
-| `google_cloud_scheduler_job` ×2 | ① tick `*/5 9-15 * * 1-5` ② report `30 16 * * *` — 둘 다 **`time_zone="Asia/Seoul"`**(UTC 환산 불필요·오프바이원 예방), HTTP POST + **OIDC token**(scheduler-sa, audience=run_url) | **`attempt_deadline="900s"`**(기본 3분이면 틱 도중 잘림)·`retry_count=0`(다음 파이어가 커버 — 재시도는 중복 파이어만 만든다, 락이 직렬화하지만 무의미). 15:30 초과분·휴장일은 서버가 거른다(§3.6) |
+| `google_cloud_scheduler_job` ×2 | ① tick `*/10 9-15 * * 1-5`(비용 — 검증 후 `*/5` 검토) ② report `30 16 * * *` — 둘 다 **`time_zone="Asia/Seoul"`**(UTC 환산 불필요·오프바이원 예방), HTTP POST + **OIDC token**(scheduler-sa, audience=run_url) | **`attempt_deadline="900s"`**(기본 3분이면 틱 도중 잘림)·`retry_count=0`(다음 파이어가 커버 — 재시도는 중복 파이어만 만든다, 락이 직렬화하지만 무의미). 15:30 초과분·휴장일은 서버가 거른다(§3.6) |
 
 DATABASE_URL(예) — Supabase(현행):
 `postgresql+asyncpg://postgres.<ref>:pw@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres`

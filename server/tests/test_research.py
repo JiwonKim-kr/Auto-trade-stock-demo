@@ -63,9 +63,9 @@ async def test_web_search_request_shape_and_note():
     client = _SeqClient(resp)
     note = await WebSearchResearch(client=client, config=ResearchConfig()).research(ctx())
     rec = client.calls[0]
-    assert rec["model"] == "claude-opus-4-8"
+    assert rec["model"] == "claude-sonnet-5"      # 조사는 Sonnet(2026-07-11 비용 — 판단은 Opus)
     assert rec["tools"][0]["type"] == "web_search_20260209"
-    assert rec["tools"][0]["max_uses"] == 4
+    assert rec["tools"][0]["max_uses"] == 2       # 뉴스 브리프 검색 상한(비용)
     assert "리서치 보조자" in rec["system"]
     assert "실적 호조" in note.summary
     assert note.sources == ["https://news.example/1"]
