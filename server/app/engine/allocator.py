@@ -32,7 +32,10 @@ def _buy_quantity(ctx: CandidateContext, decision: Decision, cfg: GuardrailConfi
         ceilings.append(ctx.cash_buying_power_krw)
     if ctx.portfolio_value_krw is not None:
         held_value = (ctx.held_quantity or Decimal(0)) * price
-        room = cfg.per_symbol_max_weight * ctx.portfolio_value_krw - held_value
+        # 비중 분모 = 총자산(포지션+현금). 포지션 평가액만 쓰면 빈 장부에서 여유가 0이 되어
+        # 첫 매수가 영원히 불가능(스트레스 샌드박스가 발견한 콜드스타트 버그).
+        equity = ctx.portfolio_value_krw + (ctx.cash_buying_power_krw or Decimal(0))
+        room = cfg.per_symbol_max_weight * equity - held_value
         ceilings.append(room if room > 0 else Decimal(0))
     ceiling = min(ceilings)
     if ceiling <= 0:

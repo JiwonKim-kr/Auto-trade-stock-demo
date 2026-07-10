@@ -194,6 +194,9 @@ async def run_tick(
     # 9) 사이징 + 주문 (DRY_RUN; 실주문 0은 주문층이 보장)
     ctx_by = {c.symbol: c for c in candidates}
     base_ctx = context_from_holdings(holdings, now, kill_switch=ks)
+    if cash is not None:  # 가드레일 비중 분모도 총자산(포지션+현금) — allocator 와 정의 일치
+        base_ctx = dataclasses.replace(
+            base_ctx, portfolio_value_krw=(base_ctx.portfolio_value_krw or Decimal(0)) + cash)
     # 오늘 이미 쓴 매수액에서 시작(호출자가 DB 합산 주입) — 일일 한도를 틱 경계 너머로 강제
     daily_used = daily_buy_used_krw
     orders: list[OrderResult] = []
