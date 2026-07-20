@@ -14,11 +14,12 @@
             GET  /api/reports/{period_end}    보고서 본문(markdown)
             POST /internal/tick               거래 틱(조립은 api/tick.py). 운영은 OIDC 권장(TODO)
             POST /internal/report?force=      보고서 생성(기본 false=휴장일에만 — Scheduler 잡 ②)
+            POST /internal/news/collect       논문 뉴스 수집(§8 — Scheduler 잡 ③, 틱과 분리)
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_order_service, get_toss_client, require_api_key, require_tick_auth
 from app.api.report import generate_report, scheduled_report
+from app.news.collector import NaverNewsClient, collect_all, load_targets
 from app.api.tick import execute_tick, reconcile_and_enforce
 from app.engine.evaluation import evaluate
 from app.orders.guardrails import KST
@@ -186,6 +188,28 @@ async def report_body(period_end: str, request: Request) -> PlainTextResponse:
     if body is None:
         raise HTTPException(404, f"보고서 없음: {period_end}")
     return PlainTextResponse(body, media_type="text/markdown; charset=utf-8")
+
+
+@router.post("/internal/news/collect", dependencies=[Depends(require_tick_auth)])
+async def news_collect(request: Request) -> dict:
+    """논문 뉴스 수집 1회(§8) — 거래 틱과 분리된 경로(레이트리밋·장애 격리)."""
+    app = request.app
+    s = app.state.settings
+    if app.state.repo is None:
+        return {"skipped": "DATABASE_URL 미설정 — 뉴스 수집은 DB 필요"}
+    if not (s.naver_client_id and s.naver_client_secret):
+        return {"skipped": "NAVER_CLIENT_ID/SECRET 미설정"}
+    if not (s.news_targets_path and s.symbol_source_path):
+        return {"skipped": "NEWS_TARGETS_PATH·SYMBOL_SOURCE_PATH(이름 해석용) 필요"}
+    targets = load_targets(s.news_targets_path, s.symbol_source_path)
+    if not targets:
+        return {"skipped": "타깃 0건 — news_targets.json 확인"}
+    client = NaverNewsClient(s.naver_client_id, s.naver_client_secret)
+    try:
+        return await collect_all(client, app.state.repo, targets,
+                                 datetime.now(timezone.utc))
+    finally:
+        await client.aclose()
 
 
 @router.post("/internal/report", dependencies=[Depends(require_tick_auth)])

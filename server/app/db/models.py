@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -184,6 +184,57 @@ class CandleCacheRow(Base):
     interval: Mapped[str] = mapped_column(Text, default="1d")
     payload_json: Mapped[str] = mapped_column(Text)     # [Candle.model_dump(mode="json"), …]
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class NewsRow(Base):
+    """논문 데이터(§8) — 뉴스 관측 1건 = (기사 URL, 종목) 쌍(이벤트 스터디 관행).
+
+    한 기사가 여러 종목에 매핑되면 종목별 1행. 전향 수집에선 UNIQUE 가 최초 관측 버전을
+    고정한다(수정 기사 재수집 무시). 시각은 tz-aware UTC — published_at 은 소스의 pubDate.
+    """
+
+    __tablename__ = "news"
+    __table_args__ = (UniqueConstraint("url", "symbol", name="uq_news_url_symbol"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(Text, index=True)
+    headline: Mapped[str] = mapped_column(Text)          # 원문(검색 하이라이트 태그·엔티티만 복원)
+    press: Mapped[str] = mapped_column(Text)             # originallink 도메인
+    url: Mapped[str] = mapped_column(Text)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(Text)            # 예: "naver_search_api"
+    mapping_method: Mapped[str] = mapped_column(Text)    # 예: "naver_query+name_match"
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cluster_id: Mapped[str | None] = mapped_column(Text, nullable=True)   # 분석 단계에서 채움
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NewsLabelRow(Base):
+    """골드 라벨(§8) — 재라벨링(자기일치도)은 label_version 으로 구분."""
+
+    __tablename__ = "news_labels"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    news_id: Mapped[int] = mapped_column(index=True)
+    label: Mapped[str] = mapped_column(Text)
+    label_version: Mapped[str] = mapped_column(Text)
+    labeled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class NewsModelOutputRow(Base):
+    """모델 추론 기록(§8) — API 모델은 버전이 바뀌므로 실험 시점·프롬프트 버전 필수."""
+
+    __tablename__ = "news_model_outputs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    news_id: Mapped[int] = mapped_column(index=True)
+    model: Mapped[str] = mapped_column(Text)
+    model_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str] = mapped_column(Text)
+    raw_output: Mapped[str] = mapped_column(Text)        # 파싱 실패해도 원시 출력 보존
+    parsed_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ResearchCacheRow(Base):

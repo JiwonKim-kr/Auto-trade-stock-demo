@@ -29,6 +29,9 @@ from app.db.models import (
     PaperEquityRow,
     PaperPositionRow,
     PaperStateRow,
+    NewsLabelRow,
+    NewsModelOutputRow,
+    NewsRow,
     PositionRow,
     PositionSnapshotRow,
     ResearchCacheRow,
@@ -331,6 +334,52 @@ class Repository:
             row.summary = summary
             row.sources_json = json.dumps(sources, ensure_ascii=False)
             row.fetched_at = datetime.now(timezone.utc)
+
+    # ── 논문 뉴스 데이터 (§8 — 전향 수집·최초 버전 고정) ─────────────────────────
+    async def insert_news(self, items: list[dict]) -> int:
+        """(url, symbol) 기존 행은 건너뛰고 신규만 삽입 — 삽입 건수 반환.
+
+        전향 수집의 최초 버전 고정: 수정 기사가 재수집돼도 같은 키면 무시된다(§8.1).
+        """
+        inserted = 0
+        async with self._sm() as s, s.begin():
+            for it in items:
+                dup = (await s.execute(
+                    select(NewsRow.id).where(NewsRow.url == it["url"],
+                                             NewsRow.symbol == it["symbol"]).limit(1)
+                )).scalar()
+                if dup is None:
+                    s.add(NewsRow(**it))
+                    inserted += 1
+        return inserted
+
+    async def count_news(self, symbol: str | None = None) -> int:
+        async with self._sm() as s:
+            q = select(func.count()).select_from(NewsRow)
+            if symbol:
+                q = q.where(NewsRow.symbol == symbol)
+            return int((await s.execute(q)).scalar() or 0)
+
+    async def add_news_label(self, news_id: int, label: str, label_version: str) -> int:
+        """골드 라벨 1건 — 재라벨링은 새 label_version 으로 append(덮어쓰기 금지·자기일치도용)."""
+        async with self._sm() as s, s.begin():
+            row = NewsLabelRow(news_id=news_id, label=label, label_version=label_version,
+                               labeled_at=datetime.now(timezone.utc))
+            s.add(row)
+            await s.flush()
+            return row.id
+
+    async def add_news_model_output(self, news_id: int, *, model: str, prompt_version: str,
+                                    raw_output: str, parsed_label: str | None,
+                                    model_version: str | None = None) -> int:
+        async with self._sm() as s, s.begin():
+            row = NewsModelOutputRow(news_id=news_id, model=model, model_version=model_version,
+                                     prompt_version=prompt_version, raw_output=raw_output,
+                                     parsed_label=parsed_label,
+                                     inferred_at=datetime.now(timezone.utc))
+            s.add(row)
+            await s.flush()
+            return row.id
 
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────
     async def load_engine_state(self) -> tuple[bool, dict] | None:

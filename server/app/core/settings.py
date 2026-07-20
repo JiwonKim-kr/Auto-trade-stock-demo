@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     reports_dir: str = "reports"
     krx_holidays_path: str | None = None
 
+    # 논문 뉴스 수집(§8) — 네이버 검색 API. 셋 다 있어야 /internal/news/collect 가 동작
+    # (거래 틱과 무관 — 분리 잡). 타깃 파일은 git 추적(유니버스 스냅샷 고정)
+    naver_client_id: str | None = None
+    naver_client_secret: str | None = None
+    news_targets_path: str | None = None    # 예: data/news_targets.json
+
     # DB 영속화 (미설정 시 인메모리 — 재시작 시 원장/엔진 상태 소실. 운영은 필수)
     # 예: postgresql+asyncpg://user:pw@host/db (Cloud SQL) · sqlite+aiosqlite:///./trading.db (로컬)
     database_url: str | None = None

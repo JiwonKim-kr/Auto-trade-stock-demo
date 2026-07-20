@@ -29,6 +29,8 @@ locals {
     "API_KEY",
     "DATABASE_URL",                # Supabase 세션 풀러(§3.0) — Cloud SQL 전환 시 새 버전으로 교체
     "NOTIFY_TELEGRAM_BOT_TOKEN",
+    "NAVER_CLIENT_ID",             # 논문 뉴스 수집(§8) — 네이버 검색 API
+    "NAVER_CLIENT_SECRET",
   ]
 }
 
@@ -124,6 +126,10 @@ resource "google_cloud_run_v2_service" "svc" {
         name  = "SCHEDULER_SA_EMAIL"
         value = google_service_account.scheduler_sa.email
       }
+      env {
+        name  = "NEWS_TARGETS_PATH" # 논문 뉴스 수집 유니버스(§8.4 — 이미지에 번들, git 추적)
+        value = "/app/data/news_targets.json"
+      }
 
       dynamic "env" {
         for_each = var.telegram_chat_id == "" ? [] : [var.telegram_chat_id]
@@ -213,6 +219,30 @@ resource "google_cloud_scheduler_job" "report" {
   http_target {
     http_method = "POST"
     uri         = "${google_cloud_run_v2_service.svc.uri}/internal/report?force=false"
+    oidc_token {
+      service_account_email = google_service_account.scheduler_sa.email
+      audience              = local.audience
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_scheduler_job" "news" {
+  name             = "${var.service_name}-news"
+  region           = var.region
+  schedule         = var.news_schedule
+  time_zone        = "Asia/Seoul"
+  attempt_deadline = "600s" # 200종목 × ~0.2s + 삽입 — 여유
+  paused           = var.scheduler_paused
+
+  retry_config {
+    retry_count = 0
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${google_cloud_run_v2_service.svc.uri}/internal/news/collect"
     oidc_token {
       service_account_email = google_service_account.scheduler_sa.email
       audience              = local.audience

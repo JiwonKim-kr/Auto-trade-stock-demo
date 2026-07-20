@@ -50,6 +50,11 @@ variable "report_schedule" {
   default = "30 16 * * *" # 매일 호출 — 거래일/기생성은 서버가 스킵(§3.9)
 }
 
+variable "news_schedule" {
+  type    = string
+  default = "0,30 8-18 * * *" # 논문 뉴스 수집(§8.4) — 30분 간격 08–18시(야간 보도는 08:00 수집)
+}
+
 # 비밀 아님(선택) — 비우면 env 미설정
 variable "telegram_chat_id" {
   type    = string
