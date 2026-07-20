@@ -17,21 +17,22 @@ DB 결정·비용·격차 배경은 [IMPLEMENTATION-PLAN §3.0](../IMPLEMENTATIO
 
 ## 적용 순서
 
+> **2026-07-11 진행 상태**: 프로젝트 `toss-trader-kr` 생성·결제 연결·API 활성·Artifact Registry·
+> 서비스계정 2·시크릿 껍데기 8종까지 **완료**(gcloud 선생성 — Terraform 상태 흡수는
+> [bootstrap-import.tf](bootstrap-import.tf) 가 첫 apply 에서 자동 수행, **성공 후 그 파일 삭제**).
+> 남은 것: 시크릿 값 주입(2단계) → 이미지 푸시 → terraform apply → 1단계 검증.
+
 ```powershell
 cd infra
 Copy-Item terraform.tfvars.example terraform.tfvars   # 값 채우기(커밋 금지 — gitignore)
 terraform init
-terraform apply -target=google_artifact_registry_repository.repo -target=google_secret_manager_secret.s
 ```
 
-**시크릿 버전 주입(TF 밖 — state 에 비밀 금지).** 8종 전부 없으면 Cloud Run 배포가 실패한다
-(NAVER 2종은 [developers.naver.com](https://developers.naver.com) 앱 등록 → 검색 API — 논문 뉴스 수집 §8):
+**시크릿 버전 주입(TF 밖 — state 에 비밀 금지, 운영자 직접 실행).** 8종 전부 없으면 Cloud Run
+배포가 실패한다. NAVER 2종은 [developers.naver.com](https://developers.naver.com) 앱 등록(검색 API):
 
 ```powershell
-foreach ($s in "TOSS_CLIENT_ID","TOSS_CLIENT_SECRET","ANTHROPIC_API_KEY","API_KEY","DATABASE_URL","NOTIFY_TELEGRAM_BOT_TOKEN","NAVER_CLIENT_ID","NAVER_CLIENT_SECRET") {
-  Write-Host "── $s"; $v = Read-Host -AsSecureString | ConvertFrom-SecureString -AsPlainText
-  $v | gcloud secrets versions add $s --data-file=-
-}
+powershell -File infra\inject-secrets.ps1   # .env 에 있는 키는 자동, 나머지는 비표시 프롬프트
 ```
 
 **이미지 빌드·푸시** (로컬 Docker 또는 `gcloud builds submit`):

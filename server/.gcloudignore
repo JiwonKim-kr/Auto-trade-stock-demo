@@ -1,0 +1,17 @@
+# gcloud builds submit 업로드 제외 — 비밀·불필요 파일이 Cloud Build 로 올라가지 않게
+# (.dockerignore 와 정합 유지. 특히 .env 류는 절대 업로드 금지)
+.venv/
+tests/
+scripts/
+reports/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+*.db
+*.sqlite
+.env
+**/.env*
+.gcloudignore
