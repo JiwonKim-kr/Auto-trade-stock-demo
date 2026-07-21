@@ -29,7 +29,9 @@ terraform init
 ```
 
 **시크릿 버전 주입(TF 밖 — state 에 비밀 금지, 운영자 직접 실행).** 8종 전부 없으면 Cloud Run
-배포가 실패한다. NAVER 2종은 [developers.naver.com](https://developers.naver.com) 앱 등록(검색 API):
+배포가 실패한다. NAVER 2종은 **NCP NAVER API HUB** Application 의 Client ID/Secret
+(콘솔: All Services > Application Services > NAVER API HUB > Application 등록 > 뉴스 검색 선택 >
+[인증 정보]). developers.naver.com 검색 API 는 NCP 로 이관됨(2026) — 한시적 무료:
 
 ```powershell
 powershell -File infra\inject-secrets.ps1   # .env 에 있는 키는 자동, 나머지는 비표시 프롬프트

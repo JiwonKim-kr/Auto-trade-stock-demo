@@ -47,7 +47,7 @@ def test_parse_item_full_row():
     assert row["symbol"] == "005930" and row["press"] == "news.example"
     assert row["published_at"] == datetime(2026, 7, 10, 0, 12, tzinfo=timezone.utc)  # +0900→UTC
     assert row["collected_at"] == NOW
-    assert row["source"] == "naver_search_api" and row["mapping_method"] == "naver_query+name_match"
+    assert row["source"] == "naver_api_hub" and row["mapping_method"] == "naver_query+name_match"
 
 
 def test_parse_item_rejects_unmapped_and_timeless():

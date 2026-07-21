@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     reports_dir: str = "reports"
     krx_holidays_path: str | None = None
 
-    # 논문 뉴스 수집(§8) — 네이버 검색 API. 셋 다 있어야 /internal/news/collect 가 동작
-    # (거래 틱과 무관 — 분리 잡). 타깃 파일은 git 추적(유니버스 스냅샷 고정)
+    # 논문 뉴스 수집(§8) — NCP NAVER API HUB Application 의 Client ID/Secret. 셋 다 있어야
+    # /internal/news/collect 동작(거래 틱과 무관 — 분리 잡). 타깃 파일은 git 추적(유니버스 스냅샷 고정)
     naver_client_id: str | None = None
     naver_client_secret: str | None = None
     news_targets_path: str | None = None    # 예: data/news_targets.json

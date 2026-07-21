@@ -1,5 +1,7 @@
-"""논문 뉴스 수집기(§8) — 네이버 검색 API(뉴스)로 (기사, 종목) 관측을 전향 수집.
+"""논문 뉴스 수집기(§8) — NAVER API HUB(NCP) 뉴스 검색으로 (기사, 종목) 관측을 전향 수집.
 
+플랫폼: developers.naver.com 검색 API 가 NCP NAVER API HUB 로 이관(2026) — 엔드포인트·
+인증 헤더만 다르고 요청 파라미터·응답 형식은 동일하다. 현재 한시적 무료(유료 전환 시 사전 공지).
 원문 복원 규칙(§8.2): title 의 검색 하이라이트 태그(<b> 등) 제거 + HTML 엔티티 unescape
 — 그 결과가 원문이다(전처리는 분석 단계, 여기선 복원만).
 매핑 규칙: 종목명 쿼리 + 제목·요약에 종목명 포함 검사(mapping_method="naver_query+name_match")
@@ -25,7 +27,7 @@ import httpx
 
 logger = logging.getLogger("app.news")
 
-SOURCE = "naver_search_api"
+SOURCE = "naver_api_hub"        # NCP NAVER API HUB(뉴스 검색) — 데이터 출처 기록(논문 provenance)
 MAPPING_METHOD = "naver_query+name_match"
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -93,14 +95,17 @@ def parse_item(item: dict, target: NewsTarget, now: datetime) -> dict | None:
 
 
 class NaverNewsClient:
-    """네이버 검색 API(뉴스). 쿼터 25,000/일 — 200종목 × 30분 폴링(08–18시)에 여유(§8.2)."""
+    """NAVER API HUB(NCP) 뉴스 검색. Application 인증정보의 Client ID/Secret 을 APIGW 헤더로 전송.
 
-    BASE = "https://openapi.naver.com/v1/search/news.json"
+    엔드포인트·헤더만 developers.naver.com 과 다르고(파라미터·응답 동일), 응답 items 스키마도 같다.
+    """
+
+    BASE = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 
     def __init__(self, client_id: str, client_secret: str,
                  client: httpx.AsyncClient | None = None):
         self._client = client or httpx.AsyncClient(timeout=10.0)
-        self._headers = {"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret}
+        self._headers = {"X-NCP-APIGW-API-KEY-ID": client_id, "X-NCP-APIGW-API-KEY": client_secret}
 
     async def search(self, query: str, start: int = 1, display: int = 100) -> list[dict]:
         r = await self._client.get(self.BASE, headers=self._headers,
