@@ -47,7 +47,16 @@ def test_parse_item_full_row():
     assert row["symbol"] == "005930" and row["press"] == "news.example"
     assert row["published_at"] == datetime(2026, 7, 10, 0, 12, tzinfo=timezone.utc)  # +0900→UTC
     assert row["collected_at"] == NOW
-    assert row["source"] == "naver_api_hub" and row["mapping_method"] == "naver_query+name_match"
+    # 제목에 종목명 → title_match(강)
+    assert row["source"] == "naver_api_hub" and row["mapping_method"] == "naver_query+title_match"
+
+
+def test_parse_item_mapping_strength():
+    # 제목엔 없고 요약에만 종목명 → desc_match(약, 광범위 언급)
+    it = item(title="코스피 3,000 돌파 마감", desc="이날 <b>삼성전자</b>가 2% 올라 지수를 견인")
+    assert parse_item(it, T, NOW)["mapping_method"] == "naver_query+desc_match"
+    # 제목·요약 어디에도 없음 → 매핑 실패로 제외
+    assert parse_item(item(title="코스피 상승 마감"), T, NOW) is None
 
 
 def test_parse_item_rejects_unmapped_and_timeless():

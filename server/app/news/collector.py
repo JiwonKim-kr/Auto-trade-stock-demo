@@ -4,8 +4,9 @@
 인증 헤더만 다르고 요청 파라미터·응답 형식은 동일하다. 현재 한시적 무료(유료 전환 시 사전 공지).
 원문 복원 규칙(§8.2): title 의 검색 하이라이트 태그(<b> 등) 제거 + HTML 엔티티 unescape
 — 그 결과가 원문이다(전처리는 분석 단계, 여기선 복원만).
-매핑 규칙: 종목명 쿼리 + 제목·요약에 종목명 포함 검사(mapping_method="naver_query+name_match")
-— 시황 기사("코스피 상승 마감")는 매핑 실패로 자동 제외된다.
+매핑 규칙(§8.2-C): 종목명 쿼리 + 포함 검사 — 제목 매핑=title_match(강), 요약에만=desc_match(약)
+로 구분 저장(둘 다 수집·원본 보존, 분석 단계에서 선택). 어디에도 없으면 매핑 실패로 자동 제외
+(시황 기사 "코스피 상승 마감" 등).
 시각: pubDate(RFC822, 분 단위, +0900)를 tz-aware 파싱 → UTC 저장. 시각 없는 관측은 버린다
 (§8 "이 논문의 생명선"). DB 저장은 경계(repo.insert_news — (url,symbol) 최초 버전 고정).
 """
@@ -28,7 +29,10 @@ import httpx
 logger = logging.getLogger("app.news")
 
 SOURCE = "naver_api_hub"        # NCP NAVER API HUB(뉴스 검색) — 데이터 출처 기록(논문 provenance)
-MAPPING_METHOD = "naver_query+name_match"
+# 매핑 강도(§8.2 옵션 C): 제목 매핑을 강(정밀), 요약에서만 걸린 건 약으로 구분 저장 →
+# 분석 단계에서 "제목만" vs "제목+요약" 두 버전으로 로버스트니스 체크 가능
+MAPPING_TITLE = "naver_query+title_match"   # 종목명이 제목에 있음(강)
+MAPPING_DESC = "naver_query+desc_match"     # 요약에만 있음 — 광범위 언급 가능(약)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -68,10 +72,18 @@ def load_targets(targets_path: str | Path, seed_path: str | Path) -> list[NewsTa
 
 
 def parse_item(item: dict, target: NewsTarget, now: datetime) -> dict | None:
-    """네이버 API item 1건 → news 행 dict. 매핑 실패(종목명 미포함)·시각 결손이면 None."""
+    """네이버 API item 1건 → news 행 dict. 매핑 실패(종목명 미포함)·시각 결손이면 None.
+
+    매핑 강도(§8.2-C): 제목에 종목명 → title_match(강), 요약에만 → desc_match(약).
+    둘 다 저장(원본 보존)하되 mapping_method 로 구분 — 분석 단계에서 선택.
+    """
     title = clean_text(item.get("title", ""))
     desc = clean_text(item.get("description", ""))
-    if target.name not in title and target.name not in desc:
+    if target.name in title:
+        mapping = MAPPING_TITLE
+    elif target.name in desc:
+        mapping = MAPPING_DESC
+    else:
         return None
     url = item.get("originallink") or item.get("link") or ""
     if not title or not url:
@@ -90,7 +102,7 @@ def parse_item(item: dict, target: NewsTarget, now: datetime) -> dict | None:
         "published_at": published.astimezone(tz.utc),
         "collected_at": now,
         "source": SOURCE,
-        "mapping_method": MAPPING_METHOD,
+        "mapping_method": mapping,
     }
 
 
