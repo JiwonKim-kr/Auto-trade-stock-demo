@@ -85,7 +85,25 @@ server/.venv/Scripts/python server/scripts/run_local.py          # 기본 포트
 - 텔레그램(`NOTIFY_TELEGRAM_BOT_TOKEN`/`CHAT_ID` 설정 시): 서킷브레이커 발동/해제·리컨실 불일치·
   자동 틱 실패·킬스위치 변경이 push 된다(같은 경보는 60분 1회).
 
-## 6. 모니터링 · 제어 (API)
+## 6. 모니터링 — GUI 대시보드
+
+프로젝트 전체 상태(자산곡선·평가·틱·주문·뉴스·안전 이벤트)를 브라우저 한 화면에서 본다.
+데이터 원천은 DB(`DATABASE_URL`) — 로컬 서버를 Supabase 에 연결해 띄우면 클라우드가 하는 걸
+그대로 비춘다(틱은 안 돌림 — **읽기 전용 뷰어**). 반응형이라 모바일에서도 열린다.
+
+```powershell
+# .env 에 DATABASE_URL(운영은 Supabase) 있으면 그걸, 없으면 로컬 DB 를 본다
+server/.venv/Scripts/python server/scripts/run_local.py --port 8000
+#   → 브라우저 http://127.0.0.1:8000/dashboard  (API 키 = .env 의 API_KEY 입력, 로컬 저장)
+```
+
+- **모바일(같은 WiFi)**: `--host 0.0.0.0` 로 띄우고 폰에서 `http://<PC-LAN-IP>:8000/dashboard`.
+  (어디서나 접근은 클라우드 배포나 터널이 필요 — 로컬은 같은 네트워크 한정)
+- 15초마다 자동 갱신 · 우상단에서 테마 전환 · `⎋` 로 API 키 삭제.
+- 데이터는 `GET /api/dashboard/overview`(인증) 1콜로 집계 — 제어 버튼(킬스위치 등)은
+  이후 같은 키로 이 페이지에 붙는다(현재는 모니터링 전용).
+
+## 7. 제어 (API)
 
 모든 `/api/*` 는 헤더 `X-API-Key` 필요(기본 `dev-local-key` — `API_KEY` 로 변경).
 
@@ -108,7 +126,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 **`/api/evaluation` 읽는 법**: 완결 트레이드 **N<100 동안 "판단 보류"가 정상**이다(운/실력 구분
 불가 — study 규율). 수 주간 곡선을 쌓은 뒤 Sharpe·벤치마크 대비를 본다. LIVE 전환의 게이트.
 
-## 7. 자동 안전장치 — 언제 걸리고 어떻게 풀리나
+## 8. 자동 안전장치 — 언제 걸리고 어떻게 풀리나
 
 | 장치 | 발동 | 해제 |
 |---|---|---|
@@ -122,7 +140,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 
 공통 원칙: **어떤 장치도 매도(청산)는 막지 않는다** — 포지션 줄일 길은 항상 열려 있다.
 
-## 8. 데이터 관리
+## 9. 데이터 관리
 
 - **DB**: `server/trading.db` (SQLite, gitignore). 테이블: `ticks`·`decisions`(LLM 근거 전수)·
   `orders`·`audit_log`·`engine_state`·`position_snapshots`/`positions`(리컨실)·
@@ -137,7 +155,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 - **분석 도구**: `calibration_report.py`(confidence 캘리브레이션) · `backtest.py`(리플레이) ·
   `stress_sim.py`(안전장치 검증) — 모두 읽기 전용.
 
-## 9. 문제 해결
+## 10. 문제 해결
 
 | 증상 | 원인/조치 |
 |---|---|
@@ -149,7 +167,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 | 틱 응답 `skipped` | 이전 틱 진행 중(직렬화) — 정상. 다음 주기에 실행됨 |
 | 평가가 계속 "판단 보류" | 완결 트레이드 N<100 — 정상. 곡선이 쌓일 시간이 필요 |
 
-## 10. 라이브 테스트(페이퍼 운용 개시) 체크리스트
+## 11. 라이브 테스트(페이퍼 운용 개시) 체크리스트
 
 실계좌 데이터 위에서 시스템을 상시 구동하되 **실주문 0**(DRY_RUN+페이퍼)인 단계. 순서대로:
 
@@ -167,7 +185,7 @@ Invoke-RestMethod http://127.0.0.1:8000/api/status -Headers $H
 운용 중 개입이 필요할 때: 킬스위치(`POST /api/kill-switch`) · 수동 리컨실(`GET /api/reconcile`)
 · 수동 보고서(`POST /internal/report`).
 
-## 11. ⚠️ LIVE 전환에 관하여 (지금은 불가)
+## 12. ⚠️ LIVE 전환에 관하여 (지금은 불가)
 
 `TRADING_MODE=LIVE` + `I_UNDERSTAND_LIVE_REAL_MONEY=YES` 를 **process env** 로 줘야 LIVE 가
 되지만(파일만으론 안 됨 — 의도된 마찰), **주문 전송 executor 가 아직 없어** LIVE 로 켜도 주문은

@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from app.api.dashboard import router as dashboard_router
 from app.api.deps import get_order_service, get_toss_client, require_api_key, require_tick_auth
 from app.api.report import generate_report, scheduled_report
 from app.news.collector import NaverNewsClient, collect_all, load_targets
@@ -222,3 +223,4 @@ async def report_now(request: Request, force: bool = False) -> dict:
 
 
 router.include_router(api)
+router.include_router(dashboard_router)

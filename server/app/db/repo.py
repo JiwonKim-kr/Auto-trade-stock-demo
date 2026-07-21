@@ -381,6 +381,55 @@ class Repository:
             await s.flush()
             return row.id
 
+    # ── 대시보드 집계 (읽기 전용 — GUI overview) ────────────────────────────────
+    async def recent_ticks(self, limit: int = 20) -> list[dict]:
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(TickRow).order_by(TickRow.id.desc()).limit(limit))).scalars().all()
+        return [{"id": r.id, "started_at": _utc(r.started_at).isoformat(), "mode": r.mode,
+                 "trade_date": r.trade_date, "kill_switch": r.kill_switch,
+                 "circuit_breaker": r.circuit_breaker, "circuit_breaker_reason": r.circuit_breaker_reason,
+                 "universe_count": r.universe_count, "candidates": r.candidates, "note": r.note,
+                 "cost_gated": json.loads(r.cost_gated_json or "[]"),
+                 "regime": json.loads(r.regime_json or "{}")} for r in rows]
+
+    async def recent_orders(self, limit: int = 20) -> list[dict]:
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(OrderRow).order_by(OrderRow.id.desc()).limit(limit))).scalars().all()
+        return [{"created_at": _utc(r.created_at).isoformat(), "symbol": r.symbol, "side": r.side,
+                 "quantity": r.quantity, "price": r.price, "mode": r.mode, "status": r.status,
+                 "reason": r.reason} for r in rows]
+
+    async def recent_decisions(self, limit: int = 30) -> list[dict]:
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(DecisionRow).order_by(DecisionRow.id.desc()).limit(limit))).scalars().all()
+        return [{"symbol": r.symbol, "action": r.action, "confidence": r.confidence,
+                 "rationale": r.rationale, "decision_price": r.decision_price} for r in rows]
+
+    async def recent_audits(self, limit: int = 20) -> list[dict]:
+        async with self._sm() as s:
+            rows = (await s.execute(
+                select(AuditRow).order_by(AuditRow.id.desc()).limit(limit))).scalars().all()
+        return [{"ts": _utc(r.ts).isoformat(), "actor": r.actor, "action": r.action,
+                 "payload": json.loads(r.payload_json or "{}")} for r in rows]
+
+    async def news_stats(self, top: int = 15, recent: int = 8) -> dict:
+        async with self._sm() as s:
+            total = int((await s.execute(select(func.count()).select_from(NewsRow))).scalar() or 0)
+            by_mapping = {m: int(c) for m, c in (await s.execute(
+                select(NewsRow.mapping_method, func.count()).group_by(NewsRow.mapping_method)))}
+            by_symbol = [{"symbol": sym, "count": int(c)} for sym, c in (await s.execute(
+                select(NewsRow.symbol, func.count()).group_by(NewsRow.symbol)
+                .order_by(func.count().desc()).limit(top)))]
+            rows = (await s.execute(select(NewsRow).order_by(NewsRow.published_at.desc())
+                                    .limit(recent))).scalars().all()
+            latest = [{"symbol": r.symbol, "headline": r.headline, "press": r.press,
+                       "published_at": _utc(r.published_at).isoformat(),
+                       "mapping_method": r.mapping_method} for r in rows]
+        return {"total": total, "by_mapping": by_mapping, "by_symbol": by_symbol, "recent": latest}
+
     # ── 엔진 상태 (킬스위치·서킷브레이커 재시작 생존) ───────────────────────────
     async def load_engine_state(self) -> tuple[bool, dict] | None:
         async with self._sm() as s:

@@ -7,7 +7,9 @@
 작업폴더를 server/ 로 고정한다 → DATABASE_URL=sqlite+aiosqlite:///./trading.db 는 항상
 server/trading.db (gitignore: *.db). 운영(Cloud Run)은 Secret Manager → env 주입이라 미사용.
 
-실행: server/.venv/Scripts/python server/scripts/run_local.py [--port 8000]
+실행: server/.venv/Scripts/python server/scripts/run_local.py [--port 8000] [--host 0.0.0.0]
+대시보드: 기동 후 http://127.0.0.1:8000/dashboard (API 키 = .env 의 API_KEY).
+모바일(같은 WiFi): `--host 0.0.0.0` 로 띄우고 폰에서 http://<PC-LAN-IP>:8000/dashboard 접속.
 """
 
 from __future__ import annotations
@@ -40,10 +42,11 @@ def main() -> None:
     os.chdir(SERVER_DIR)                       # 상대경로(DB 등) 기준 고정
     sys.path.insert(0, str(SERVER_DIR))
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8000
+    host = sys.argv[sys.argv.index("--host") + 1] if "--host" in sys.argv else "127.0.0.1"
 
     import uvicorn
 
-    uvicorn.run("app.main:app", host="127.0.0.1", port=port)
+    uvicorn.run("app.main:app", host=host, port=port)
 
 
 if __name__ == "__main__":
