@@ -31,9 +31,15 @@ variable "enable_cloud_sql" {
   default = false
 }
 
-# 배포 직후 1단계 검증(토스 IP — §3.2) 전까지 잡을 일시정지 상태로 생성한다.
-# 검증 통과 후 false 로 바꿔 apply(또는 콘솔에서 resume).
-variable "scheduler_paused" {
+# 잡별 일시정지(§3.0 B안 — 뉴스/거래 분리 제어). 둘 다 기본 true(검증 전 정지).
+# - 뉴스 수집: 무료·거래 위험 0 → 1단계 검증 후 먼저 켠다(news_paused=false).
+# - 거래 틱+보고서: LLM 비용·자율운용 시작 → 준비되면 켠다(trading_paused=false).
+variable "news_paused" {
+  type    = bool
+  default = true
+}
+
+variable "trading_paused" {
   type    = bool
   default = true
 }

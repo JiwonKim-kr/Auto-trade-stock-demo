@@ -186,7 +186,7 @@ resource "google_cloud_scheduler_job" "tick" {
   schedule         = var.tick_schedule
   time_zone        = "Asia/Seoul"
   attempt_deadline = "900s" # 기본 3분이면 틱 도중 잘림(§3.0-4)
-  paused           = var.scheduler_paused
+  paused           = var.trading_paused # 거래 틱 — LLM 비용·자율운용 시작점(뉴스와 분리 제어)
 
   retry_config {
     retry_count = 0 # 다음 파이어가 커버 — 재시도는 중복만 만든다(락이 직렬화하지만 무의미)
@@ -210,7 +210,7 @@ resource "google_cloud_scheduler_job" "report" {
   schedule         = var.report_schedule
   time_zone        = "Asia/Seoul"
   attempt_deadline = "300s"
-  paused           = var.scheduler_paused
+  paused           = var.trading_paused # 보고서는 페이퍼 운용 산출물 — 거래와 함께 켠다
 
   retry_config {
     retry_count = 0
@@ -234,7 +234,7 @@ resource "google_cloud_scheduler_job" "news" {
   schedule         = var.news_schedule
   time_zone        = "Asia/Seoul"
   attempt_deadline = "600s" # 200종목 × ~0.2s + 삽입 — 여유
-  paused           = var.scheduler_paused
+  paused           = var.news_paused # 논문 뉴스 수집 — 무료·거래 위험 0이라 먼저 켤 수 있음
 
   retry_config {
     retry_count = 0
