@@ -17,6 +17,12 @@ class Settings(BaseSettings):
 
     # 배포 환경 판별 — "production" 이면 하드닝 활성(§3.7: /docs 차단·기본 API키 기동 거부)
     app_env: str = "local"
+
+    # 샌드박스: 토스 대신 합성 시세로 상시 틱(비용·실계좌 의존 0). DRY_RUN 강제 +
+    # 운영 DB(postgresql) 사용 시 기동 거부(페이퍼 원장·논문 데이터 오염 방지).
+    sandbox_mode: bool = False
+    sandbox_seed: int = 42                 # 같은 시드 → 같은 가격 경로(재현 가능)
+    sandbox_day_seconds: int = 60          # 이 시간마다 시뮬 1일 진행(틱 간격과 맞추면 자연스러움)
     # "json" 이면 한 줄 JSON 로깅(§3.8 — Cloud Logging severity). 로컬 기본 text
     log_format: str = "text"
 

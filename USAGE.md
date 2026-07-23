@@ -103,6 +103,34 @@ server/.venv/Scripts/python server/scripts/run_local.py --port 8000
 - 데이터는 `GET /api/dashboard/overview`(인증) 1콜로 집계 — 제어 버튼(킬스위치 등)은
   이후 같은 키로 이 페이지에 붙는다(현재는 모니터링 전용).
 
+## 6.5 샌드박스 상시 운용 (합성 시세로 거래 틱 활성화)
+
+실계좌·비용 없이 **거래 틱을 계속 돌려** 대시보드로 전 파이프라인을 관측한다.
+
+```powershell
+server/.venv/Scripts/python server/scripts/run_sandbox.py --interval 15 --universe 20
+#   → 대시보드 http://127.0.0.1:8010/dashboard  (API 키: sandbox-local-key)
+#   --llm 을 붙이면 실제 LLM 판단(유료). 기본은 결정적 폴백(무료)
+```
+
+무엇이 분리되는가 — **운영과 완전 격리**:
+
+| | 샌드박스 | 운영(클라우드) |
+|---|---|---|
+| 시세 | 합성 랜덤워크(시드 고정·재현 가능) | 토스 실시세 |
+| 토스 API | **0콜** | 실호출 |
+| LLM | 0콜(기본) | Opus/Sonnet |
+| DB | `server/sandbox.db` (별도) | Supabase |
+| 장시간 | 무시(밤에도 틱) | KST 장중만 |
+
+- **안전 가드**: `SANDBOX_MODE` 인데 `DATABASE_URL` 이 운영 DB(postgresql)면 **기동 거부**한다
+  (합성 거래가 페이퍼 원장·논문 뉴스를 오염시키는 것 차단). LIVE 요청도 DRY_RUN 으로 강제.
+- 초기화: `server/sandbox.db` 삭제 후 재기동.
+- **한계**: 자산곡선은 `trade_date`(실제 KST 날짜) 기준이라 **하루에 1점**만 쌓인다 — 며칠 켜두면
+  곡선이 생긴다. 다일 성과 곡선을 바로 보려면 `scripts/backtest.py`(리플레이)를 쓸 것.
+- 합성 시장엔 종목별 고유 추세를 넣는다(추세가 없으면 폴백 confidence 가 낮아 **전부 비용
+  게이트에서 거부**되어 거부 경로만 검증된다 — 게이트 자체는 그대로 작동).
+
 ## 7. 제어 (API)
 
 모든 `/api/*` 는 헤더 `X-API-Key` 필요(기본 `dev-local-key` — `API_KEY` 로 변경).

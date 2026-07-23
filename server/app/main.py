@@ -26,6 +26,7 @@ from app.orders.guardrails import GuardrailConfig
 from app.orders.models import TradingMode
 from app.orders.service import OrderService
 from app.toss.client import TossClient, TossConfig
+from app.toss.sandbox import SandboxToss
 
 logger = logging.getLogger("app")
 
@@ -39,6 +40,12 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             "APP_ENV=production 인데 API_KEY 가 기본값(dev-local-key) — 기동 거부. "
             "Secret Manager 등으로 API_KEY 를 주입하라 (IMPLEMENTATION-PLAN §3.7)")
+    # 샌드박스 가드는 **DB 연결보다 먼저**(운영 DB 를 건드리기 전에 거부해야 의미가 있다)
+    if settings.sandbox_mode and (settings.database_url or "").startswith("postgresql"):
+        raise RuntimeError(
+            "SANDBOX_MODE 인데 DATABASE_URL 이 운영 DB(postgresql) — 기동 거부. "
+            "합성 거래가 실제 페이퍼 원장·논문 데이터를 오염시킨다. "
+            "sqlite 샌드박스 DB 를 쓰라(scripts/run_sandbox.py 가 자동 설정)")
     mode, warnings = load_trading_mode()
     for w in warnings:
         logger.warning(w)
@@ -95,8 +102,19 @@ async def lifespan(app: FastAPI):
         logger.critical("LIVE 요청됐으나 DATABASE_URL 미설정 — DRY_RUN 강등 "
                         "(일일한도 누적·리컨실·멱등 2차방어가 DB 전제)")
 
+    # 샌드박스: 합성 시세로 상시 틱(토스 호출 0). 실계좌·비용과 완전 분리.
     app.state.toss_client = None
-    if settings.toss_client_id and settings.toss_client_secret:
+    if settings.sandbox_mode:
+        if mode is TradingMode.LIVE:
+            mode = TradingMode.DRY_RUN
+            app.state.order_service.mode = mode
+            logger.critical("SANDBOX_MODE — LIVE 요청 무시하고 DRY_RUN 강제(합성 시세는 실계좌 아님)")
+        app.state.trading_mode = mode
+        app.state.toss_client = SandboxToss(seed=settings.sandbox_seed,
+                                            day_seconds=settings.sandbox_day_seconds)
+        logger.warning("🧪 SANDBOX_MODE — 합성 시세(토스 호출 0)·seed=%s·시뮬 1일=%ss",
+                       settings.sandbox_seed, settings.sandbox_day_seconds)
+    elif settings.toss_client_id and settings.toss_client_secret:
         app.state.toss_client = TossClient(
             TossConfig(
                 client_id=settings.toss_client_id,

@@ -39,3 +39,4 @@ Thumbs.db
 terraform.tfvars
 *.auto.tfvars
 .terraform.lock.hcl
+sandbox.db
