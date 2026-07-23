@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     sandbox_mode: bool = False
     sandbox_seed: int = 42                 # 같은 시드 → 같은 가격 경로(재현 가능)
     sandbox_day_seconds: int = 60          # 이 시간마다 시뮬 1일 진행(틱 간격과 맞추면 자연스러움)
+
+    # PG 전용 스키마 격리(같은 DB 안에서 분리). 클라우드 샌드박스는 이걸로 운영 테이블과 분리한다
+    # — search_path 를 이 스키마로 고정하므로 운영(public) 테이블이 보이지도 않는다.
+    db_schema: str | None = None
     # "json" 이면 한 줄 JSON 로깅(§3.8 — Cloud Logging severity). 로컬 기본 text
     log_format: str = "text"
 

@@ -55,18 +55,42 @@ async def test_sandbox_starts_warmed_up():
 
 
 # ── 안전 가드 ────────────────────────────────────────────────────────────────
-def test_sandbox_refuses_production_database(monkeypatch):
-    """합성 거래가 운영 페이퍼 원장·논문 데이터를 오염시키는 것을 기동 단계에서 차단."""
+def test_sandbox_refuses_production_schema(monkeypatch):
+    """PG 샌드박스가 전용 스키마 없이(=public) 뜨면 운영 테이블과 섞인다 → 기동 거부."""
     monkeypatch.setenv("SANDBOX_MODE", "true")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@host:5432/db")
+    monkeypatch.delenv("DB_SCHEMA", raising=False)
     get_settings.cache_clear()
     try:
         app = create_app()
-        with pytest.raises(RuntimeError, match="운영 DB"):
+        with pytest.raises(RuntimeError, match="DB_SCHEMA"):
             with TestClient(app):
                 pass
     finally:
         get_settings.cache_clear()
+
+
+def test_schema_name_is_whitelisted():
+    """스키마 이름은 DDL 에 문자열로 들어가므로 화이트리스트 밖은 거부(주입 차단)."""
+    from app.db.session import _valid_schema, make_engine as mk
+
+    assert _valid_schema("sandbox") == "sandbox"
+    for bad in ('sand;DROP TABLE x', 'a"b', "1abc", "with space", ""):
+        with pytest.raises(ValueError, match="허용되지 않는"):
+            _valid_schema(bad)
+    # 유효 스키마로는 엔진이 정상 생성되고, 잘못된 이름은 생성 단계에서 막힌다
+    assert mk("postgresql+asyncpg://u:p@host:5432/db", "sandbox").dialect.name == "postgresql"
+    with pytest.raises(ValueError):
+        mk("postgresql+asyncpg://u:p@host:5432/db", "sand;DROP")
+
+
+def test_sqlite_ignores_schema(tmp_path):
+    """SQLite 는 스키마 개념이 없어 무시(로컬 샌드박스는 파일 분리로 격리)."""
+    from app.db.session import init_db, make_engine as mk
+
+    eng = mk(f"sqlite+aiosqlite:///{tmp_path}/s.db", "sandbox")
+    assert eng.dialect.name == "sqlite"
+    return eng, init_db
 
 
 def test_sandbox_forces_dry_run_even_if_live_requested(monkeypatch, tmp_path):

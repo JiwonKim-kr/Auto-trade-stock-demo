@@ -27,9 +27,9 @@ locals {
     "TOSS_CLIENT_SECRET",
     "ANTHROPIC_API_KEY",
     "API_KEY",
-    "DATABASE_URL",                # Supabase 세션 풀러(§3.0) — Cloud SQL 전환 시 새 버전으로 교체
+    "DATABASE_URL", # Supabase 세션 풀러(§3.0) — Cloud SQL 전환 시 새 버전으로 교체
     "NOTIFY_TELEGRAM_BOT_TOKEN",
-    "NAVER_CLIENT_ID",             # 논문 뉴스 수집(§8) — 네이버 검색 API
+    "NAVER_CLIENT_ID", # 논문 뉴스 수집(§8) — 네이버 검색 API
     "NAVER_CLIENT_SECRET",
   ]
 }
@@ -185,7 +185,7 @@ resource "google_cloud_scheduler_job" "tick" {
   region           = var.region
   schedule         = var.tick_schedule
   time_zone        = "Asia/Seoul"
-  attempt_deadline = "900s" # 기본 3분이면 틱 도중 잘림(§3.0-4)
+  attempt_deadline = "900s"             # 기본 3분이면 틱 도중 잘림(§3.0-4)
   paused           = var.trading_paused # 거래 틱 — LLM 비용·자율운용 시작점(뉴스와 분리 제어)
 
   retry_config {
@@ -233,7 +233,7 @@ resource "google_cloud_scheduler_job" "news" {
   region           = var.region
   schedule         = var.news_schedule
   time_zone        = "Asia/Seoul"
-  attempt_deadline = "600s" # 200종목 × ~0.2s + 삽입 — 여유
+  attempt_deadline = "600s"          # 200종목 × ~0.2s + 삽입 — 여유
   paused           = var.news_paused # 논문 뉴스 수집 — 무료·거래 위험 0이라 먼저 켤 수 있음
 
   retry_config {
@@ -243,6 +243,133 @@ resource "google_cloud_scheduler_job" "news" {
   http_target {
     http_method = "POST"
     uri         = "${google_cloud_run_v2_service.svc.uri}/internal/news/collect"
+    oidc_token {
+      service_account_email = google_service_account.scheduler_sa.email
+      audience              = local.audience
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# ── 클라우드 샌드박스: 합성 시세로 24/7 거래 능력 확인 (enable_sandbox) ────────
+# 운영 서비스와 분리된 Cloud Run + 전용 Scheduler. 토스·Anthropic 시크릿을 **주지 않는다**
+# (합성 시세·결정적 폴백 판단 → 외부 호출 0·비용 0). DB 는 같은 Supabase 의 sandbox 스키마.
+resource "google_cloud_run_v2_service" "sandbox" {
+  count    = var.enable_sandbox ? 1 : 0
+  name     = "${var.service_name}-sandbox"
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  custom_audiences = [local.audience]
+
+  template {
+    service_account = google_service_account.run_sa.email
+    timeout         = "900s"
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    containers {
+      image = var.image
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "1Gi"
+        }
+      }
+
+      env {
+        name  = "APP_ENV"
+        value = "production"
+      }
+      env {
+        name  = "SANDBOX_MODE"
+        value = "true"
+      }
+      env {
+        name  = "DB_SCHEMA" # ★ 운영(public)과 구조적 분리 — 없으면 앱이 기동을 거부한다
+        value = "sandbox"
+      }
+      env {
+        name  = "SANDBOX_DAY_SECONDS" # 틱 간격과 맞춤(틱 1회 = 시뮬 1일)
+        value = "600"
+      }
+      env {
+        name  = "ENFORCE_MARKET_HOURS" # 24/7 관측
+        value = "false"
+      }
+      env {
+        name  = "TICK_INTERVAL_SEC" # 내장 루프 OFF — Scheduler 가 구동
+        value = "0"
+      }
+      env {
+        name  = "OIDC_AUDIENCE"
+        value = local.audience
+      }
+      env {
+        name  = "SCHEDULER_SA_EMAIL"
+        value = google_service_account.scheduler_sa.email
+      }
+      env {
+        name  = "SYMBOL_SOURCE_PATH"
+        value = "/app/data/krx_symbols.json"
+      }
+
+      # 필요한 시크릿은 API_KEY·DATABASE_URL 뿐(토스·Anthropic·텔레그램 미주입 = 외부 호출 0)
+      dynamic "env" {
+        for_each = toset(["API_KEY", "DATABASE_URL"])
+        content {
+          name = env.value
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.s[env.value].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [google_secret_manager_secret_iam_member.run_secret_access]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "sandbox_invoker_scheduler" {
+  count    = var.enable_sandbox ? 1 : 0
+  name     = google_cloud_run_v2_service.sandbox[0].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.scheduler_sa.email}"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "sandbox_invoker_operator" {
+  count    = var.enable_sandbox ? 1 : 0
+  name     = google_cloud_run_v2_service.sandbox[0].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "user:${var.operator_email}"
+}
+
+resource "google_cloud_scheduler_job" "sandbox_tick" {
+  count            = var.enable_sandbox ? 1 : 0
+  name             = "${var.service_name}-sandbox-tick"
+  region           = var.region
+  schedule         = var.sandbox_schedule
+  time_zone        = "Asia/Seoul"
+  attempt_deadline = "900s"
+  paused           = var.sandbox_paused
+
+  retry_config {
+    retry_count = 0
+  }
+
+  http_target {
+    http_method = "POST"
+    uri         = "${google_cloud_run_v2_service.sandbox[0].uri}/internal/tick"
     oidc_token {
       service_account_email = google_service_account.scheduler_sa.email
       audience              = local.audience

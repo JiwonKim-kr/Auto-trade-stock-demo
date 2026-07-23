@@ -45,7 +45,7 @@ variable "trading_paused" {
 }
 
 variable "tick_schedule" {
-  type    = string
+  type = string
   # 10분 = LLM 비용 ½(2026-07-11 절감 세트). 테스트 단계 검증 후 */5 복귀 검토.
   # Asia/Seoul — 15:30 초과분·휴장일은 서버가 거른다
   default = "*/10 9-15 * * 1-5"
@@ -59,6 +59,23 @@ variable "report_schedule" {
 variable "news_schedule" {
   type    = string
   default = "0,30 8-18 * * *" # 논문 뉴스 수집(§8.4) — 30분 간격 08–18시(야간 보도는 08:00 수집)
+}
+
+# ── 클라우드 샌드박스(합성 시세로 24/7 거래 능력 확인) ────────────────────────
+# 토스 0콜·LLM 0콜. 운영과는 **DB 스키마**로 분리(DB_SCHEMA=sandbox — public 이 보이지 않음).
+variable "enable_sandbox" {
+  type    = bool
+  default = false
+}
+
+variable "sandbox_schedule" {
+  type    = string
+  default = "*/10 * * * *" # 24/7 10분 간격(장시간 무시) — 틱 1회 = 시뮬 1일
+}
+
+variable "sandbox_paused" {
+  type    = bool
+  default = true
 }
 
 # 비밀 아님(선택) — 비우면 env 미설정

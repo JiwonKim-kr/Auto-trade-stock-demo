@@ -40,12 +40,15 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             "APP_ENV=production 인데 API_KEY 가 기본값(dev-local-key) — 기동 거부. "
             "Secret Manager 등으로 API_KEY 를 주입하라 (IMPLEMENTATION-PLAN §3.7)")
-    # 샌드박스 가드는 **DB 연결보다 먼저**(운영 DB 를 건드리기 전에 거부해야 의미가 있다)
+    # 샌드박스 가드는 **DB 연결보다 먼저**(운영 DB 를 건드리기 전에 거부해야 의미가 있다).
+    # PG 를 쓰려면 전용 스키마 필수 — 합성 거래가 운영 테이블(public)에 섞이면 페이퍼 원장·
+    # 논문 데이터가 오염된다. 로컬은 별도 sqlite 파일로 분리(run_sandbox.py).
     if settings.sandbox_mode and (settings.database_url or "").startswith("postgresql"):
-        raise RuntimeError(
-            "SANDBOX_MODE 인데 DATABASE_URL 이 운영 DB(postgresql) — 기동 거부. "
-            "합성 거래가 실제 페이퍼 원장·논문 데이터를 오염시킨다. "
-            "sqlite 샌드박스 DB 를 쓰라(scripts/run_sandbox.py 가 자동 설정)")
+        if (settings.db_schema or "public") == "public":
+            raise RuntimeError(
+                "SANDBOX_MODE + PostgreSQL 인데 DB_SCHEMA 가 없다(=public) — 기동 거부. "
+                "합성 거래가 운영 페이퍼 원장·논문 데이터와 같은 스키마에 쌓인다. "
+                "DB_SCHEMA=sandbox 처럼 전용 스키마를 지정하라(로컬은 sqlite 파일 분리).")
     mode, warnings = load_trading_mode()
     for w in warnings:
         logger.warning(w)
@@ -77,8 +80,8 @@ async def lifespan(app: FastAPI):
     app.state.repo = None
     app.state.db_engine = None
     if settings.database_url:
-        engine = make_engine(settings.database_url)
-        await init_db(engine)
+        engine = make_engine(settings.database_url, settings.db_schema)
+        await init_db(engine, settings.db_schema)
         repo = Repository(make_sessionmaker(engine))
         app.state.repo, app.state.db_engine = repo, engine
         state = await repo.load_engine_state()

@@ -8,6 +8,8 @@ URL 예: 운영 `postgresql+asyncpg://...`, 로컬 `sqlite+aiosqlite:///./tradin
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -21,10 +23,26 @@ from app.db.models import Base
 _ADDITIVE_COLUMNS: list[tuple[str, str, str]] = [
     ("report_log", "body", "TEXT"),
 ]
+_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")     # DDL 에 문자열로 들어가므로 화이트리스트
 
 
-def make_engine(database_url: str) -> AsyncEngine:
-    return create_async_engine(database_url, pool_pre_ping=True)
+def _valid_schema(schema: str) -> str:
+    if not _SCHEMA_RE.match(schema):
+        raise ValueError(f"허용되지 않는 스키마 이름: {schema!r}")
+    return schema
+
+
+def make_engine(database_url: str, schema: str | None = None) -> AsyncEngine:
+    """schema 지정 시(PG 전용) 해당 스키마로 search_path 를 고정 — 같은 DB 안에서 완전 분리.
+
+    샌드박스(합성 거래)가 운영 테이블을 건드리지 않게 하는 **구조적** 격리 수단이다
+    (권한이 아니라 경로 분리 — public 을 search_path 에서 빼므로 운영 테이블이 보이지 않는다).
+    SQLite 는 스키마 개념이 없어 무시된다(로컬 샌드박스는 별도 파일로 분리).
+    """
+    kwargs: dict = {}
+    if schema and database_url.startswith("postgresql"):
+        kwargs["connect_args"] = {"server_settings": {"search_path": _valid_schema(schema)}}
+    return create_async_engine(database_url, pool_pre_ping=True, **kwargs)
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker:
@@ -40,8 +58,10 @@ def _apply_additive_migrations(conn) -> None:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
 
 
-async def init_db(engine: AsyncEngine) -> None:
-    """스키마 생성(존재하면 no-op) + 등록된 추가 컬럼 반영."""
+async def init_db(engine: AsyncEngine, schema: str | None = None) -> None:
+    """테이블 생성(존재하면 no-op) + 등록된 추가 컬럼 반영. schema 지정 시 먼저 스키마를 만든다."""
     async with engine.begin() as conn:
+        if schema and engine.dialect.name == "postgresql":
+            await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{_valid_schema(schema)}"'))
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_apply_additive_migrations)
