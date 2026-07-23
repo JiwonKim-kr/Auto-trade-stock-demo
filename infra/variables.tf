@@ -46,9 +46,10 @@ variable "trading_paused" {
 
 variable "tick_schedule" {
   type = string
-  # 10분 = LLM 비용 ½(2026-07-11 절감 세트). 테스트 단계 검증 후 */5 복귀 검토.
-  # Asia/Seoul — 15:30 초과분·휴장일은 서버가 거른다
-  default = "*/10 9-15 * * 1-5"
+  # 20분 = 페이퍼 운용 개시 시점 선택(2026-07-11). 5분 대비 LLM 비용 ¼.
+  # 대가: 결정적 청산(손절) 감지 지연이 최대 20분 — 일봉 전략이라 수용 가능.
+  # 성과 표본이 쌓인 뒤 */10·*/5 복귀 검토. Asia/Seoul — 15:30 초과분·휴장일은 서버가 거른다
+  default = "*/20 9-15 * * 1-5"
 }
 
 variable "report_schedule" {
