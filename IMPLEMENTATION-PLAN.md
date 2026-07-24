@@ -735,3 +735,75 @@ pykrx/FDR(수정주가 — **액면분할 종목으로 실측 검증 후 채택*
    예: 한전 기사가 "카카오톡 알림" 언급으로 카카오에 매핑). **기본 분석은 `title_match` 만 사용**하고
    `desc_match` 는 로버스트니스 축·수동 점검 대상. 영문 사명(035420 NAVER=19건)은 과소수집 →
    타깃 목록에 한글 별칭 병기 검토.
+
+---
+
+## §9. 거래 틱 VM 이전 (경로 B — 토스 고정 IP) — 계획, 2026-07-24
+
+**배경(실측)**: 관리형 Cloud Run 은 고정 이그레스 IP 가 없어(구글 IP 풀 로테이션) **토스 IP
+허용목록**을 맞출 수 없다 — 2026-07-24 페이퍼 개시 첫날 틱이 매 20분 발화했으나 전량
+`Toss API 403 [access_denied] IP address not allowed` 로 실패(0건 기록, LLM 앞에서 죽어 비용 0).
+Cloud NAT 로 고정 IP 를 붙이면 되나 상시 NAT 게이트웨이가 **~$35/월**(크레딧 소진 가속).
+→ 크레딧 제약상 더 싼 **경로 B**: 서울 소형 VM 1대에 앱 전체를 상시 구동(고정 IP 자연 확보).
+사실상 **M1 로컬 상시 운용을 VM 에 올리는 것** — 내장 틱 루프(`tick_loop`, 장중 틱+휴장일 보고서)를
+그대로 재사용하므로 앱 코드 변경 거의 없음. Cloud Run·Scheduler·OIDC·NAT 전부 불필요.
+
+### 9.1 목표 아키텍처
+- 서울(asia-northeast3) VM 1대(**e2-small 권장**, RAM 여유. e2-micro 로 낮추면 더 쌈) + 예약 정적 IP.
+- 앱 = 기존 이미지(**server:v3**, 현 HEAD — 대시보드·샌드박스 포함)를 `docker run --restart=always`
+  + `--env-file /etc/toss-trader/.env`.
+- **틱**: `TICK_INTERVAL_SEC=1200` → 내장 루프가 장중(평일 09:00–15:30 KST) 20분 틱 + 휴장일 보고서.
+- **뉴스**: systemd timer/cron(30분, 08–18시)이 `curl localhost:8000/internal/news/collect`
+  (localhost 는 API 키 경로 — require_tick_auth 폴백).
+- **DB**: 기존 Supabase(public — 실제 페이퍼 원장). 엔진 상태 DB 복원 → VM 재시작 생존.
+- **인바운드**: SSH(22)만, **IAP** 또는 운영자 IP 한정. 앱 포트(8000)는 127.0.0.1 바인딩 = 미노출
+  (Cloud Run 대비 공개 노출면 축소). 대시보드는 SSH 터널.
+- **아웃바운드**(토스·Anthropic·NAVER·Telegram·Supabase)는 정적 IP 로 나감 → **그 IP 를 토스 허용목록에 등록**.
+
+### 9.2 비용 (서울, 월 — GCP 부분)
+| 항목 | e2-small | e2-micro |
+|---|---|---|
+| VM | ~$14 | ~$7 |
+| 정적 IP(사용 중) | ~$3.6 | ~$3.6 |
+| 부팅 디스크 20GB | ~$1.6 | ~$1.6 |
+| **소계** | **~$19** | **~$12** |
+
+Cloud Run+NAT 경로(GCP ~$37–47) 대비 **~$25–30/월 절감**. LLM 비용은 동일($12–50). Supabase $0.
+
+### 9.3 이전 절차
+**Phase 1 — 프로비저닝(재작업 없이 준비, 컷오버 전까지 Cloud Run 유지)**
+1. 이미지 v3 빌드·푸시: `gcloud builds submit --tag …/server:v3`(현 HEAD).
+2. `infra/vm.tf`: `google_compute_address`(정적 IP) · `google_compute_instance`(e2-small, Seoul,
+   Container-Optimized OS) · `google_compute_firewall`(SSH via IAP 대역 35.235.240.0/20 만) ·
+   VM 서비스계정(artifactregistry.reader — 이미지 pull). startup-script 로 이미지 pull + systemd unit.
+   변수 `enable_vm`(기본 false)로 게이트 — 기존 리소스 무영향.
+3. 시크릿: `/etc/toss-trader/.env`(chmod 600, root) — 운영자가 채움(TOSS·ANTHROPIC·NAVER·
+   DATABASE_URL(Supabase)·API_KEY·TELEGRAM + TICK_INTERVAL_SEC=1200·APP_ENV=production·
+   ENFORCE_MARKET_HOURS=true). Secret Manager 대안 가능하나 .env 가 단순(로컬과 동일 패턴).
+4. systemd: `toss-trader.service`(docker run --restart=always) + `toss-news.timer`(30분).
+
+**Phase 2 — 컷오버**
+5. VM 기동 → SSH 터널로 `/api/status`·`/dashboard` 확인 → 장중 수동 틱 1회(localhost) →
+   **토스 200·Supabase 틱 기록** 확인(고정 IP 등록 후).
+6. 정적 IP 를 **토스 Open API 허용목록에 등록**(운영자만 가능).
+7. Cloud Run Scheduler 잡 정지(`trading_paused=true`·`news_paused=true`) — 뉴스 이중 수집 방지
+   (dedup 있지만 낭비). VM 이 뉴스 인수.
+8. 장중 첫 자동 틱(VM) 통과 확인.
+
+**Phase 3 — 정리**
+9. 안정 확인 후 Cloud Run 서비스·Scheduler·scheduler-sa 를 Terraform 에서 제거(또는 enable=false).
+   **유지**: Artifact Registry(VM 이 pull) · Supabase · 시크릿. **미도입**: Cloud NAT(경로 A 폐기).
+
+### 9.4 보안·운영·한계
+- 공개 엔드포인트 0(Cloud Run 대비 노출면 축소). OIDC(require_tick_auth)는 VM 에선 미사용이나 코드 유지.
+- **단일 VM SPOF**: `--restart=always` + 엔진 상태 Supabase 복원 + VM 자동 재시작으로 완화. 페이퍼
+  단계엔 충분. LIVE(M3) 전 이중화·헬스체크 재검토.
+- 관측: `gcloud compute ssh toss-trader-vm -- -L 8000:localhost:8000` → `http://localhost:8000/dashboard`.
+- 앱 갱신 = 새 이미지 빌드 → VM `docker pull` + `systemctl restart`(스크립트화).
+
+### 9.5 롤백
+컷오버(Phase 2-7) 전까지 Cloud Run 잡은 정지 상태로 보존 → 문제 시 원상복구는 쉬우나 **토스 IP
+문제는 롤백해도 그대로**다(Cloud Run 재개 = 다시 403). 실질 진행 불가 시 대안은 §9 재검토(국내 VPS 등).
+
+### 9.6 남은 결정(보고 시 확인)
+VM 크기(e2-small 권장) · 배포 방식(Docker 이미지 권장) · 시크릿(.env 파일 권장) · SSH(IAP 권장).
